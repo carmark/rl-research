@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MILES - 架构与训练流程</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<div class="page-header">
+  <h1>MILES</h1>
+  <p class="subtitle">RadixArk · SGLang + Megatron 解耦 · R3 路由回放 · 端到端 FP8</p>
+</div>
+
+<div class="diagram-container">
+  <div id="legend"></div>
+
+  <h2 class="section-title">系统架构</h2>
+
+  <svg id="arch-svg" class="svg-canvas" viewBox="0 0 1100 550">
+    <defs>
+      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e2233" stroke-width="0.5"/>
+      </pattern>
+    </defs>
+    <rect width="1100" height="550" fill="url(#grid)"/>
+
+    <!-- Top: modular layer -->
+    <rect x="60" y="20" width="980" height="50" rx="10" fill="rgba(99,102,241,.1)" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="550" y="42" class="comp-label" fill="#6366f1">模块化解耦架构 (Algorithm · Data · Rollout · Eval 独立插拔)</text>
+    <text x="550" y="58" class="comp-sublabel">InfiXAI × Ant Group × SGLang RL Team · 基于 slime 演进</text>
+
+    <!-- Core problem statement -->
+    <rect x="60" y="85" width="980" height="35" rx="6" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="1"/>
+    <text x="550" y="107" class="comp-sublabel" fill="var(--data)">核心问题: SGLang ↔ Megatron MoE 路由不一致 → ~10% Router 选择不同专家 · 94% Token 至少一层不同</text>
+
+    <!-- Left: Rollout (SGLang) -->
+    <g id="box-rollout">
+      <rect id="comp-rollout" class="comp-box rollout" x="60" y="140" width="340" height="230"/>
+      <text x="230" y="168" class="comp-label">Rollout 引擎 (SGLang)</text>
+
+      <rect x="80" y="182" width="300" height="35" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="230" y="204" class="comp-sublabel" fill="var(--rollout)">SGLang Server · RadixAttention · 动态批处理</text>
+
+      <rect x="80" y="225" width="140" height="40" rx="6" fill="rgba(251,146,60,.1)" stroke="var(--data)" stroke-width="0.8"/>
+      <text x="150" y="242" class="comp-sublabel" fill="var(--data)">R3 路由记录</text>
+      <text x="150" y="257" class="comp-sublabel">Top-K 专家索引</text>
+
+      <rect x="240" y="225" width="140" height="40" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="310" y="242" class="comp-sublabel" fill="var(--rollout)">FP8 推理</text>
+      <text x="310" y="257" class="comp-sublabel">端到端一致性</text>
+
+      <rect x="80" y="275" width="300" height="35" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="230" y="290" class="comp-sublabel" fill="var(--rollout)">投机解码: 在线 SFT MTP 草稿层</text>
+      <text x="230" y="305" class="comp-sublabel">草稿模型与训练同步更新 · 25%+ 加速</text>
+
+      <rect x="80" y="318" width="300" height="35" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="230" y="333" class="comp-sublabel" fill="var(--rollout)">APRIL 部分 Rollout (继承自 slime)</text>
+      <text x="230" y="348" class="comp-sublabel">长尾生成管理 · 智能过量供应</text>
+    </g>
+
+    <!-- Center: R3 Bridge -->
+    <g id="box-r3">
+      <rect id="comp-r3" class="comp-box data" x="430" y="140" width="240" height="230"/>
+      <text x="550" y="168" class="comp-label">R3 路由回放桥</text>
+
+      <rect x="450" y="185" width="200" height="50" rx="6" fill="rgba(251,146,60,.1)" stroke="var(--data)" stroke-width="0.8"/>
+      <text x="550" y="205" class="comp-sublabel" fill="var(--data)">Rollout 记录 Expert Mask</text>
+      <text x="550" y="220" class="comp-sublabel">每层每 Token 的 Top-K 索引</text>
+
+      <rect x="450" y="245" width="200" height="50" rx="6" fill="rgba(251,146,60,.1)" stroke="var(--data)" stroke-width="0.8"/>
+      <text x="550" y="265" class="comp-sublabel" fill="var(--data)">Training 回放 Mask</text>
+      <text x="550" y="280" class="comp-sublabel">Softmax 中强制相同专家</text>
+
+      <rect x="450" y="305" width="200" height="25" rx="4" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.5"/>
+      <text x="550" y="322" class="comp-sublabel" fill="var(--training)">Router 权重仍可训练</text>
+
+      <rect x="450" y="340" width="200" height="22" rx="4" fill="rgba(52,211,153,.06)" stroke="var(--training)" stroke-width="0.5"/>
+      <text x="550" y="355" class="comp-sublabel" fill="var(--training)">KL 散度大幅下降</text>
+    </g>
+
+    <!-- Right: Training (Megatron) -->
+    <g id="box-training">
+      <rect id="comp-training" class="comp-box training" x="700" y="140" width="350" height="230"/>
+      <text x="875" y="168" class="comp-label">Training 引擎 (Megatron)</text>
+
+      <rect x="720" y="185" width="310" height="35" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="875" y="207" class="comp-sublabel" fill="var(--training)">Megatron-LM · TP + PP + DP + EP 并行</text>
+
+      <rect x="720" y="230" width="150" height="40" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="795" y="248" class="comp-sublabel" fill="var(--training)">FP8 训练</text>
+      <text x="795" y="263" class="comp-sublabel">端到端一致</text>
+
+      <rect x="880" y="230" width="150" height="40" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="955" y="248" class="comp-sublabel" fill="var(--training)">INT4 QAT</text>
+      <text x="955" y="263" class="comp-sublabel">W4A16 量化</text>
+
+      <rect x="720" y="280" width="310" height="35" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="875" y="302" class="comp-sublabel" fill="var(--training)">PPO / GRPO / DAPO 算法</text>
+
+      <rect x="720" y="325" width="310" height="35" rx="6" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.8"/>
+      <text x="875" y="340" class="comp-sublabel" fill="var(--io)">MrlX: 异步共演化多智能体 RL</text>
+      <text x="875" y="355" class="comp-sublabel">医患模拟 · DeepResearch 流水线</text>
+    </g>
+
+    <!-- Arrows -->
+    <path class="flow-arrow data" d="M 400 255 L 430 255" marker-end="url(#arrowhead-data)"/>
+    <text x="415" y="248" style="font-size:8px" fill="var(--data)" text-anchor="middle">mask</text>
+    <path class="flow-arrow data" d="M 670 255 L 700 255" marker-end="url(#arrowhead-data)"/>
+    <text x="685" y="248" style="font-size:8px" fill="var(--data)" text-anchor="middle">replay</text>
+
+    <!-- Weight sync -->
+    <path class="flow-arrow io" d="M 875 370 Q 875 420 550 440 Q 230 420 230 370" marker-end="url(#arrowhead-io)" stroke-dasharray="5,3"/>
+    <text x="550" y="455" class="comp-sublabel" fill="var(--io)">参数同步 (NCCL / 共享内存)</text>
+
+    <!-- Bottom layer -->
+    <rect x="60" y="475" width="990" height="55" rx="10" fill="rgba(167,139,250,.05)" stroke="var(--io)" stroke-width="0.8"/>
+    <text x="550" y="500" class="comp-label" fill="var(--io)">基础设施层</text>
+    <rect x="100" y="508" width="120" height="18" rx="4" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="160" y="520" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">Ray 调度</text>
+    <rect x="240" y="508" width="120" height="18" rx="4" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="300" y="520" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">NCCL 通信</text>
+    <rect x="380" y="508" width="140" height="18" rx="4" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="450" y="520" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">HTTP SGLang API</text>
+    <rect x="540" y="508" width="160" height="18" rx="4" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="620" y="520" style="font-size:9px" fill="var(--training)" text-anchor="middle" dominant-baseline="central">Megatron + mbridge</text>
+    <rect x="720" y="508" width="140" height="18" rx="4" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="790" y="520" style="font-size:9px" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">H200 单机 1TB</text>
+    <rect x="880" y="508" width="140" height="18" rx="4" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="950" y="520" style="font-size:9px" fill="var(--data)" text-anchor="middle" dominant-baseline="central">AMD ROCm 支持</text>
+  </svg>
+
+  <h2 class="section-title">训练流程动画</h2>
+
+  <svg id="flow-svg" class="svg-canvas" viewBox="0 0 1100 380">
+    <rect width="1100" height="380" fill="#0f1117"/>
+
+    <rect id="flow-prompt" class="comp-box data" x="30" y="140" width="110" height="80"/>
+    <text x="85" y="170" class="comp-label">Prompt</text>
+    <text x="85" y="188" class="comp-sublabel">输入分发</text>
+
+    <rect id="flow-rollout" class="comp-box rollout" x="180" y="110" width="150" height="140"/>
+    <text x="255" y="145" class="comp-label">Rollout</text>
+    <text x="255" y="165" class="comp-sublabel">SGLang FP8</text>
+    <text x="255" y="185" class="comp-sublabel">投机解码</text>
+    <text x="255" y="210" class="comp-sublabel" fill="var(--rollout)">● 记录 R3 Mask</text>
+    <text x="255" y="228" class="comp-sublabel" fill="var(--rollout)">● APRIL 部分生成</text>
+
+    <rect id="flow-r3" class="comp-box data" x="370" y="140" width="120" height="80"/>
+    <text x="430" y="170" class="comp-label">R3 Bridge</text>
+    <text x="430" y="188" class="comp-sublabel">路由 Mask</text>
+
+    <rect id="flow-reward" class="comp-box data" x="530" y="140" width="110" height="80"/>
+    <text x="585" y="170" class="comp-label">Reward</text>
+    <text x="585" y="188" class="comp-sublabel">奖励计算</text>
+
+    <rect id="flow-adv" class="comp-box data" x="680" y="140" width="110" height="80"/>
+    <text x="735" y="170" class="comp-label">Advantage</text>
+    <text x="735" y="188" class="comp-sublabel">GRPO/PPO</text>
+
+    <rect id="flow-train" class="comp-box training" x="830" y="110" width="240" height="140"/>
+    <text x="950" y="145" class="comp-label">Training</text>
+    <text x="950" y="165" class="comp-sublabel">Megatron FP8</text>
+    <text x="950" y="185" class="comp-sublabel">R3 Mask 回放</text>
+    <text x="950" y="210" class="comp-sublabel" fill="var(--training)">● 路由一致性保证</text>
+    <text x="950" y="228" class="comp-sublabel" fill="var(--training)">● Router 权重可训练</text>
+
+    <path id="fp1" class="flow-arrow rollout" d="M 140 180 L 180 180" marker-end="url(#arrowhead-rollout)"/>
+    <path id="fp2" class="flow-arrow data" d="M 330 180 L 370 180" marker-end="url(#arrowhead-data)"/>
+    <path id="fp3" class="flow-arrow data" d="M 490 180 L 530 180" marker-end="url(#arrowhead-data)"/>
+    <path id="fp4" class="flow-arrow data" d="M 640 180 L 680 180" marker-end="url(#arrowhead-data)"/>
+    <path id="fp5" class="flow-arrow training" d="M 790 180 L 830 180" marker-end="url(#arrowhead-training)"/>
+    <path id="fp-back" class="flow-arrow io" d="M 950 250 Q 950 330 550 350 Q 85 330 85 220"
+          fill="none" marker-end="url(#arrowhead-io)" stroke-dasharray="6,3"/>
+    <text x="530" y="365" class="comp-sublabel" fill="var(--io)">权重同步 + MTP 草稿模型更新</text>
+
+    <path id="pp1" d="M 85 180 L 180 180" fill="none" stroke="none"/>
+    <path id="pp2" d="M 180 180 L 370 180" fill="none" stroke="none"/>
+    <path id="pp3" d="M 370 180 L 530 180" fill="none" stroke="none"/>
+    <path id="pp4" d="M 530 180 L 680 180" fill="none" stroke="none"/>
+    <path id="pp5" d="M 680 180 L 830 180" fill="none" stroke="none"/>
+    <path id="pp6" d="M 950 250 Q 950 330 550 350 Q 85 330 85 220" fill="none" stroke="none"/>
+  </svg>
+
+  <div id="controls"></div>
+
+  <div class="info-grid">
+    <div class="info-card rollout">
+      <h3>Rollout / Generation</h3>
+      <ul>
+        <li>SGLang 推理引擎 (FP8 量化)</li>
+        <li>R3 路由记录 (Top-K 专家索引)</li>
+        <li>投机解码: 在线 SFT MTP 草稿层 (25%+)</li>
+        <li>APRIL 部分 Rollout (长尾管理)</li>
+        <li>INT4 W4A16: 1TB 模型单机推理</li>
+      </ul>
+    </div>
+    <div class="info-card training">
+      <h3>Training / Optimization</h3>
+      <ul>
+        <li>Megatron-LM (FP8 端到端训练)</li>
+        <li>R3 Mask 回放保证路由一致</li>
+        <li>PPO / GRPO / DAPO 算法</li>
+        <li>Router 权重保持可训练</li>
+        <li>MrlX 多智能体共演化</li>
+      </ul>
+    </div>
+    <div class="info-card data">
+      <h3>Data Processing</h3>
+      <ul>
+        <li>R3 Bridge: Rollout → Mask → Training</li>
+        <li>端到端 FP8 精度一致性</li>
+        <li>模块化: 算法/数据/Rollout/Eval 独立</li>
+        <li>Data Buffer 管理</li>
+        <li>KL 散度大幅下降</li>
+      </ul>
+    </div>
+    <div class="info-card io">
+      <h3>I/O & Communication</h3>
+      <ul>
+        <li>Ray 分布式调度</li>
+        <li>NCCL 集合通信</li>
+        <li>HTTP SGLang API 通信</li>
+        <li>CUDA IPC / 共享内存</li>
+        <li>AMD ROCm 支持</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2 class="section-title">关键性能数据</h2>
+  <div class="comparison-row">
+    <div class="comparison-cell">
+      <h4>投机解码加速</h4>
+      <div style="font-size:1.4rem;color:var(--rollout);font-weight:700">25%+</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">在线 SFT MTP 草稿层</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>MoE 路由差异</h4>
+      <div style="font-size:1.4rem;color:var(--data);font-weight:700">~10%</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">R3 修复前差异率</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>精度方案</h4>
+      <div style="font-size:1.4rem;color:var(--training);font-weight:700">FP8 E2E</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">首个端到端 FP8 框架</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>单机模型规模</h4>
+      <div style="font-size:1.4rem;color:var(--io);font-weight:700">1TB</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">INT4 QAT · H200</div>
+    </div>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('svg').forEach(svg => injectArrowMarkers(svg));
+  buildLegend(document.getElementById('legend'));
+
+  const flowSvg = document.getElementById('flow-svg');
+  const stages = [
+    { id: 'prompt', label: 'Prompt', category: 'data', duration: 1000,
+      components: ['flow-prompt'], arrows: ['fp1'],
+      particles: [{ pathId: 'pp1', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'rollout', label: 'Rollout+R3', category: 'rollout', duration: 3000,
+      components: ['flow-prompt', 'flow-rollout'], arrows: ['fp1', 'fp2'],
+      particles: [{ pathId: 'pp2', category: 'rollout', count: 5, stagger: 0.12 }] },
+    { id: 'r3', label: 'R3 Bridge', category: 'data', duration: 1200,
+      components: ['flow-rollout', 'flow-r3'], arrows: ['fp2', 'fp3'],
+      particles: [{ pathId: 'pp3', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'reward', label: '奖励', category: 'data', duration: 1200,
+      components: ['flow-r3', 'flow-reward'], arrows: ['fp3', 'fp4'],
+      particles: [{ pathId: 'pp4', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'adv', label: 'Advantage', category: 'data', duration: 1000,
+      components: ['flow-reward', 'flow-adv'], arrows: ['fp4', 'fp5'],
+      particles: [{ pathId: 'pp5', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'train', label: 'Training', category: 'training', duration: 2500,
+      components: ['flow-adv', 'flow-train'], arrows: ['fp5'],
+      particles: [{ pathId: 'pp5', category: 'training', count: 4, stagger: 0.15 }] },
+    { id: 'sync', label: '权重同步', category: 'io', duration: 1800,
+      components: ['flow-train', 'flow-prompt'], arrows: ['fp-back'],
+      particles: [{ pathId: 'pp6', category: 'io', count: 5, stagger: 0.1 }] },
+  ];
+
+  const animator = new TrainingFlowAnimator(flowSvg, stages, { loop: true });
+  animator.mount(document.getElementById('controls'));
+});
+</script>
+</body>
+</html>

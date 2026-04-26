@@ -1,0 +1,270 @@
+# =============================================================================
+# GRPO + DeepSeek MoE Tool-Calling Agent Training Configuration
+# =============================================================================
+# Primary configuration for training a tool-calling agent using verl framework
+# with GRPO algorithm and DeepSeek MoE model.
+#
+# Usage:
+#   python -m verl.trainer.main --config configs/grpo_deepseek_tool.yaml
+# =============================================================================
+
+# ---------------------
+# Model Configuration
+# ---------------------
+model:
+  name: "deepseek-ai/DeepSeek-V2.5"          # 或 DeepSeek-V3
+  # name: "Qwen/Qwen2.5-7B-Instruct"         # 单机验证时使用
+  trust_remote_code: true
+  dtype: "bfloat16"
+  # LoRA 配置 (大模型显存不足时启用)
+  lora:
+    enabled: false
+    rank: 64
+    alpha: 128
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    dropout: 0.0
+
+# ---------------------
+# Tokenizer
+# ---------------------
+tokenizer:
+  name: null  # 默认使用 model.name
+  padding_side: "left"
+  truncation_side: "left"
+
+# ---------------------
+# Data Configuration
+# ---------------------
+data:
+  train_files:
+    - "data/train_prompts.jsonl"
+  eval_files:
+    - "data/eval_prompts.jsonl"
+  max_prompt_length: 2048
+  max_response_length: 4096
+  # GRPO repeat: 每个 prompt 生成 group_size 个 response
+  group_size: 8
+  shuffle: true
+  seed: 42
+
+# ---------------------
+# Rollout Configuration
+# ---------------------
+rollout:
+  name: "vllm"
+  mode: "server"                              # server mode: 动态批处理, 支持 AgentLoop
+  tensor_parallel_size: 8                     # 单实例 TP (节点内)
+  gpu_memory_utilization: 0.85
+  dtype: "float16"                            # 推理精度 (vLLM FP8 量化另行配置)
+  max_model_len: 16384                        # 最大上下文长度
+
+  # Generation parameters
+  generation:
+    max_new_tokens: 4096
+    temperature: 0.7
+    top_p: 0.95
+    top_k: -1                                 # disabled
+    repetition_penalty: 1.0
+    stop_sequences: ["<|endoftext|>", "<|im_end|>"]
+
+  # AgentLoop 配置
+  agent_loop:
+    enabled: true
+    max_turns: 10                             # 最大交互轮次
+    tool_timeout: 30                          # 单次工具调用超时 (秒)
+    rollout_timeout: 120                      # 整个 rollout 超时 (秒)
+    max_tool_calls_per_turn: 5
+    max_total_tool_calls: 50
+
+  # 长尾处理
+  long_tail:
+    timeout_action: "truncate"                # "truncate" or "discard"
+    partial_rollout_reuse: true               # 复用部分完成的 rollout (APRIL 思路)
+
+  # vLLM FP8 量化 (加速推理)
+  quantization:
+    enabled: false                            # 按需启用
+    method: "fp8"                             # W8A8
+    kv_cache_dtype: "auto"
+
+# ---------------------
+# Training Configuration
+# ---------------------
+training:
+  backend: "megatron"                         # "fsdp" (研究) 或 "megatron" (生产)
+  # backend: "fsdp"                           # 单机验证时使用 FSDP
+
+  # Parallelism (Megatron 5D)
+  parallel:
+    tensor_parallel_size: 4
+    pipeline_parallel_size: 2
+    data_parallel_size: 8                     # auto: total_gpus / (TP * PP)
+    expert_parallel_size: 8                   # MoE EP
+    context_parallel_size: 1                  # 按需启用 (长上下文)
+    sequence_parallel: true
+
+  # Optimizer
+  optimizer:
+    name: "adamw"
+    lr: 1.0e-6
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+  # Scheduler
+  scheduler:
+    name: "cosine"
+    warmup_steps: 50
+    min_lr_ratio: 0.1
+
+  # Training loop
+  micro_batch_size: 2                         # per GPU
+  gradient_accumulation_steps: 4
+  max_grad_norm: 1.0
+  epochs_per_update: 1                        # 每批数据训练轮次
+  total_training_steps: 5000
+
+  # Mixed precision
+  mixed_precision:
+    enabled: true
+    dtype: "bfloat16"
+    # FP8 training (实验性, Megatron 后端)
+    fp8_training: false
+
+  # Checkpoint
+  checkpoint:
+    save_steps: 200
+    save_dir: "checkpoints/"
+    max_checkpoints: 5
+    resume_from: null
+
+# ---------------------
+# Algorithm Configuration (GRPO)
+# ---------------------
+algorithm:
+  name: "grpo"
+
+  # GRPO 特定参数
+  grpo:
+    group_size: 8                             # 与 data.group_size 保持一致
+    clip_ratio: 0.2                           # PPO-style 裁剪
+    kl_coeff: 0.01                            # KL 散度惩罚
+    entropy_coeff: 0.01                       # 熵正则化
+    # DAPO 扩展 (熵坍塌时启用)
+    dynamic_sampling: false                   # 过滤全对/全错 group
+    clip_higher: false                        # 正优势使用更大裁剪范围
+
+  # 参考策略
+  reference:
+    enabled: true
+    update_interval: 0                        # 0 = 不更新参考模型 (固定为初始权重)
+
+# ---------------------
+# Reward Configuration
+# ---------------------
+reward:
+  # Rule-based 奖励
+  rule_weight: 0.7
+  format_correct: 0.1
+  format_incorrect: -0.1
+  task_correct: 1.0
+  task_incorrect: 0.0
+  process_per_call: 0.05
+  process_max_calls: 10
+  noop_factor: 0.3
+  match_mode: "contains"                      # "exact", "contains", "numeric"
+
+  # LLM-as-Judge (可选)
+  judge_weight: 0.3
+  judge:
+    enabled: false                            # 生产训练时启用
+    model: "gpt-4"
+    endpoint: null                            # OpenAI-compatible API endpoint
+    api_key: null
+
+# ---------------------
+# Tool Environment
+# ---------------------
+tools:
+  # 内置工具
+  web_search:
+    enabled: true
+    backend: "mock"                           # "mock" or "serpapi"
+    api_key: null
+  calculator:
+    enabled: true
+  code_executor:
+    enabled: true
+    backend: "subprocess"                     # "subprocess" or "docker"
+    docker_image: "verl-sandbox:latest"
+  database:
+    enabled: true
+    db_path: ":memory:"
+
+  # 环境管理
+  cleanup_on_reset: true                      # 每个 episode 前清理 (防泄露)
+
+# ---------------------
+# Resource & Deployment
+# ---------------------
+resources:
+  # GPU 总数 (Ray 会自动分配)
+  num_gpus: 64
+  # 共置 vs 解耦
+  colocate: true                              # true: 训练+推理共享 GPU
+  # 解耦模式配置 (colocate=false 时生效)
+  rollout_gpus: 16
+  training_gpus: 48
+
+  # Ray 配置
+  ray:
+    address: "auto"                           # Ray cluster address
+    namespace: "verl-agent"
+
+# ---------------------
+# Weight Sync
+# ---------------------
+weight_sync:
+  engine: "3d_hybrid"                         # 3D-HybridEngine
+  backend: "nccl"                             # "nccl" or "nixl"
+
+# ---------------------
+# Logging & Monitoring
+# ---------------------
+logging:
+  project: "verl-agent-tool-calling"
+  wandb:
+    enabled: true
+    entity: null
+    project: "verl-agent"
+  log_interval: 10
+  eval_interval: 100
+  metrics:
+    - "reward/mean"
+    - "reward/std"
+    - "reward/task_score"
+    - "reward/format_score"
+    - "reward/is_noop_ratio"
+    - "policy/loss"
+    - "policy/kl"
+    - "policy/entropy"
+    - "policy/grad_norm"
+    - "rollout/num_turns_mean"
+    - "rollout/num_tool_calls_mean"
+    - "rollout/timeout_ratio"
+    - "rollout/throughput_tok_per_sec"
+    - "system/gpu_utilization"
+    - "system/weight_sync_ms"
+
+# ---------------------
+# MoE Specific
+# ---------------------
+moe:
+  # 路由一致性监控
+  monitor_routing_consistency: true
+  routing_diff_threshold: 0.05                # 差异率 > 5% 时告警
+  # R3 路由回放 (可选)
+  r3_routing_replay: false
+  # Expert 负载均衡
+  load_balance_loss_coeff: 0.01
+  expert_capacity_factor: 1.5

@@ -1,0 +1,214 @@
+# =============================================================================
+# PPO + DeepSeek MoE Tool-Calling Agent Training Configuration (Backup)
+# =============================================================================
+# Alternative configuration using PPO algorithm. Requires a Critic model,
+# using ~2x GPU resources compared to GRPO.
+#
+# Usage:
+#   python -m verl.trainer.main --config configs/ppo_deepseek_tool.yaml
+# =============================================================================
+
+# ---------------------
+# Model Configuration
+# ---------------------
+model:
+  name: "deepseek-ai/DeepSeek-V2.5"
+  trust_remote_code: true
+  dtype: "bfloat16"
+  lora:
+    enabled: false
+    rank: 64
+    alpha: 128
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+    dropout: 0.0
+
+# ---------------------
+# Critic Model
+# ---------------------
+critic:
+  name: "deepseek-ai/DeepSeek-V2.5"          # 通常与 Actor 同架构
+  separate_gpu: false                          # true: Critic 单独占用 GPU
+  dtype: "bfloat16"
+  lr: 5.0e-6                                  # Critic 学习率通常较高
+  lora:
+    enabled: true                              # Critic 推荐使用 LoRA 节省显存
+    rank: 32
+    alpha: 64
+
+tokenizer:
+  name: null
+  padding_side: "left"
+
+# ---------------------
+# Data
+# ---------------------
+data:
+  train_files:
+    - "data/train_prompts.jsonl"
+  eval_files:
+    - "data/eval_prompts.jsonl"
+  max_prompt_length: 2048
+  max_response_length: 4096
+  shuffle: true
+  seed: 42
+
+# ---------------------
+# Rollout
+# ---------------------
+rollout:
+  name: "vllm"
+  mode: "server"
+  tensor_parallel_size: 8
+  gpu_memory_utilization: 0.85
+  dtype: "float16"
+  max_model_len: 16384
+
+  generation:
+    max_new_tokens: 4096
+    temperature: 0.7
+    top_p: 0.95
+    stop_sequences: ["<|endoftext|>", "<|im_end|>"]
+
+  agent_loop:
+    enabled: true
+    max_turns: 10
+    tool_timeout: 30
+    rollout_timeout: 120
+
+# ---------------------
+# Training
+# ---------------------
+training:
+  backend: "megatron"
+
+  parallel:
+    tensor_parallel_size: 4
+    pipeline_parallel_size: 2
+    data_parallel_size: 4                     # PPO 需要分配 GPU 给 Critic
+    expert_parallel_size: 8
+    context_parallel_size: 1
+    sequence_parallel: true
+
+  optimizer:
+    name: "adamw"
+    lr: 5.0e-7                                # PPO 通常使用更小的 Actor lr
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "cosine"
+    warmup_steps: 50
+    min_lr_ratio: 0.1
+
+  micro_batch_size: 1                         # PPO 显存压力更大
+  gradient_accumulation_steps: 8
+  max_grad_norm: 1.0
+  epochs_per_update: 1
+  total_training_steps: 5000
+
+  mixed_precision:
+    enabled: true
+    dtype: "bfloat16"
+
+  checkpoint:
+    save_steps: 200
+    save_dir: "checkpoints/"
+    max_checkpoints: 5
+
+# ---------------------
+# Algorithm (PPO)
+# ---------------------
+algorithm:
+  name: "ppo"
+
+  ppo:
+    clip_ratio: 0.2
+    kl_coeff: 0.02                            # PPO 通常使用稍大的 KL 系数
+    entropy_coeff: 0.01
+    value_loss_coeff: 0.5
+    gae_lambda: 0.95                          # GAE lambda
+    gamma: 1.0                                # 折扣因子 (单步对话=1.0)
+    num_mini_batches: 4                       # PPO mini-batch 数
+    ppo_epochs: 4                             # 每批数据训练的 epoch 数
+
+  reference:
+    enabled: true
+    update_interval: 0
+
+# ---------------------
+# Reward (same as GRPO)
+# ---------------------
+reward:
+  rule_weight: 0.7
+  format_correct: 0.1
+  format_incorrect: -0.1
+  task_correct: 1.0
+  task_incorrect: 0.0
+  process_per_call: 0.05
+  process_max_calls: 10
+  noop_factor: 0.3
+  match_mode: "contains"
+
+  judge_weight: 0.3
+  judge:
+    enabled: false
+    model: "gpt-4"
+    endpoint: null
+
+# ---------------------
+# Tools (same as GRPO)
+# ---------------------
+tools:
+  web_search:
+    enabled: true
+    backend: "mock"
+  calculator:
+    enabled: true
+  code_executor:
+    enabled: true
+    backend: "subprocess"
+  database:
+    enabled: true
+    db_path: ":memory:"
+  cleanup_on_reset: true
+
+# ---------------------
+# Resources
+# ---------------------
+resources:
+  num_gpus: 64
+  colocate: true
+  ray:
+    address: "auto"
+    namespace: "verl-agent"
+
+weight_sync:
+  engine: "3d_hybrid"
+  backend: "nccl"
+
+# ---------------------
+# Logging
+# ---------------------
+logging:
+  project: "verl-agent-tool-calling-ppo"
+  wandb:
+    enabled: true
+    project: "verl-agent"
+  log_interval: 10
+  eval_interval: 100
+  metrics:
+    - "reward/mean"
+    - "reward/std"
+    - "policy/loss"
+    - "policy/kl"
+    - "policy/entropy"
+    - "critic/loss"
+    - "critic/explained_variance"
+    - "rollout/num_turns_mean"
+    - "system/gpu_utilization"
+
+moe:
+  monitor_routing_consistency: true
+  routing_diff_threshold: 0.05
+  r3_routing_replay: false
+  load_balance_loss_coeff: 0.01

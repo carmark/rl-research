@@ -1,0 +1,416 @@
+/* ===== Agentic RL System Diagrams - Shared Styles ===== */
+
+/* ---------- Reset & Base ---------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: #0f1117;
+  color: #e0e4ec;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+/* ---------- Color Tokens ---------- */
+:root {
+  /* Functional category colors */
+  --rollout:      #4a9eff;   /* Blue   - Rollout / Generation */
+  --rollout-bg:   rgba(74, 158, 255, .12);
+  --training:     #34d399;   /* Green  - Training / Optimization */
+  --training-bg:  rgba(52, 211, 153, .12);
+  --data:         #fb923c;   /* Orange - Data Processing */
+  --data-bg:      rgba(251, 146, 60, .12);
+  --io:           #a78bfa;   /* Purple - I/O & Communication */
+  --io-bg:        rgba(167, 139, 250, .12);
+
+  /* Neutral */
+  --surface:      #1a1d27;
+  --surface-2:    #242836;
+  --border:       #2e3345;
+  --text-primary: #e0e4ec;
+  --text-muted:   #8892a6;
+
+  /* Accent */
+  --accent:       #6366f1;
+  --accent-glow:  rgba(99, 102, 241, .35);
+
+  /* Particle */
+  --particle-size: 6px;
+}
+
+/* ---------- Layout ---------- */
+.page-header {
+  text-align: center;
+  padding: 2rem 1rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.page-header h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--rollout), var(--training));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.page-header .subtitle {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-top: 0.3rem;
+}
+
+.diagram-container {
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+}
+
+.section-title {
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin: 2rem 0 1rem;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--accent);
+}
+
+/* ---------- SVG Canvas ---------- */
+.svg-canvas {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: visible;
+}
+
+/* ---------- Component Boxes ---------- */
+.comp-box {
+  rx: 8;
+  ry: 8;
+  stroke-width: 1.5;
+  transition: filter 0.3s, opacity 0.3s;
+}
+.comp-box.rollout  { fill: var(--rollout-bg);  stroke: var(--rollout);  }
+.comp-box.training { fill: var(--training-bg); stroke: var(--training); }
+.comp-box.data     { fill: var(--data-bg);     stroke: var(--data);     }
+.comp-box.io       { fill: var(--io-bg);       stroke: var(--io);       }
+
+.comp-box.active {
+  filter: drop-shadow(0 0 12px currentColor);
+}
+.comp-box.dimmed {
+  opacity: 0.3;
+}
+
+/* Component labels */
+.comp-label {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--text-primary);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+.comp-sublabel {
+  font-size: 10px;
+  fill: var(--text-muted);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+/* ---------- Arrows / Paths ---------- */
+.flow-arrow {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-dasharray: none;
+  marker-end: url(#arrowhead);
+}
+.flow-arrow.rollout  { stroke: var(--rollout);  }
+.flow-arrow.training { stroke: var(--training); }
+.flow-arrow.data     { stroke: var(--data);     }
+.flow-arrow.io       { stroke: var(--io);       }
+.flow-arrow.dimmed   { opacity: 0.15; }
+
+/* ---------- Particles ---------- */
+.particle {
+  r: 3;
+  opacity: 0;
+}
+.particle.rollout  { fill: var(--rollout);  }
+.particle.training { fill: var(--training); }
+.particle.data     { fill: var(--data);     }
+.particle.io       { fill: var(--io);       }
+
+.particle.active {
+  opacity: 1;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+/* ---------- Stage Indicator ---------- */
+.stage-badge {
+  display: inline-block;
+  padding: 0.25rem 0.8rem;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0 0.3rem;
+  transition: all 0.3s;
+}
+.stage-badge.rollout  { background: var(--rollout-bg);  color: var(--rollout);  border: 1px solid var(--rollout);  }
+.stage-badge.training { background: var(--training-bg); color: var(--training); border: 1px solid var(--training); }
+.stage-badge.data     { background: var(--data-bg);     color: var(--data);     border: 1px solid var(--data);     }
+.stage-badge.io       { background: var(--io-bg);       color: var(--io);       border: 1px solid var(--io);       }
+.stage-badge.active   { transform: scale(1.1); box-shadow: 0 0 12px currentColor; }
+
+/* ---------- Control Panel ---------- */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.8rem 1.2rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin: 1rem 0;
+  flex-wrap: wrap;
+}
+.controls .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s;
+}
+.controls .btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.controls .btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.controls .speed-slider {
+  -webkit-appearance: none;
+  width: 100px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
+}
+.controls .speed-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.controls .speed-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-width: 35px;
+}
+
+.controls .stage-indicators {
+  display: flex;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+
+/* ---------- Timeline / Progress ---------- */
+.timeline {
+  width: 100%;
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 3px;
+  margin: 0.8rem 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+.timeline-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--rollout), var(--training), var(--data));
+  transition: width 0.3s;
+}
+
+/* ---------- Legend ---------- */
+.legend {
+  display: flex;
+  gap: 1.2rem;
+  padding: 0.8rem 0;
+  flex-wrap: wrap;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.legend-dot.rollout  { background: var(--rollout);  }
+.legend-dot.training { background: var(--training); }
+.legend-dot.data     { background: var(--data);     }
+.legend-dot.io       { background: var(--io);       }
+
+/* ---------- Info Cards ---------- */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+.info-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+.info-card h3 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+.info-card.rollout  h3 { color: var(--rollout);  }
+.info-card.training h3 { color: var(--training); }
+.info-card.data     h3 { color: var(--data);     }
+.info-card.io       h3 { color: var(--io);       }
+
+.info-card ul {
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.info-card li { padding: 0.15rem 0; }
+.info-card li::before {
+  content: "›";
+  margin-right: 0.4rem;
+  color: var(--text-muted);
+}
+
+/* ---------- Tooltip ---------- */
+.tooltip {
+  position: absolute;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 100;
+  max-width: 260px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4);
+}
+.tooltip.visible { opacity: 1; }
+
+/* ---------- Keyframe Animations ---------- */
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px currentColor); }
+  50%      { filter: drop-shadow(0 0 16px currentColor); }
+}
+@keyframes particle-move {
+  0%   { offset-distance: 0%; opacity: 1; }
+  100% { offset-distance: 100%; opacity: 0.3; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fade-in 0.5s ease forwards;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 768px) {
+  html { font-size: 13px; }
+  .controls { gap: 0.4rem; padding: 0.6rem; }
+  .controls .stage-indicators { margin-left: 0; margin-top: 0.4rem; width: 100%; }
+  .info-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- Index / Navigation Page ---------- */
+.nav-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.2rem;
+  padding: 2rem 1rem;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.nav-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-decoration: none;
+  color: var(--text-primary);
+  transition: all 0.3s;
+  display: block;
+}
+.nav-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 30px var(--accent-glow);
+}
+.nav-card h2 {
+  font-size: 1.1rem;
+  margin-bottom: 0.4rem;
+}
+.nav-card p {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+.nav-card .tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  margin-top: 0.6rem;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+/* ---------- Comparison Page ---------- */
+.comparison-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0;
+}
+.comparison-cell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.8rem;
+  text-align: center;
+  font-size: 0.8rem;
+  transition: all 0.3s;
+}
+.comparison-cell.highlight {
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.comparison-cell h4 {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ROLL - 架构与训练流程</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<div class="page-header">
+  <h1>ROLL</h1>
+  <p class="subtitle">阿里巴巴 · 高效可扩展的 RL Post-Training 库 · 单控制器 + AutoDeviceMapping</p>
+</div>
+
+<div class="diagram-container">
+  <div id="legend"></div>
+
+  <!-- ===== Architecture Diagram ===== -->
+  <h2 class="section-title">系统架构</h2>
+
+  <svg id="arch-svg" class="svg-canvas" viewBox="0 0 1100 600">
+    <defs>
+      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e2233" stroke-width="0.5"/>
+      </pattern>
+    </defs>
+    <rect width="1100" height="600" fill="url(#grid)"/>
+
+    <!-- Single Controller -->
+    <rect x="380" y="20" width="340" height="50" rx="25" fill="rgba(99,102,241,.15)" stroke="#6366f1" stroke-width="1.5"/>
+    <text x="550" y="50" class="comp-label" fill="#6366f1">单控制器 (RLTrainer)</text>
+
+    <!-- AutoDeviceMapping -->
+    <rect x="60" y="90" width="980" height="50" rx="8" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="1"/>
+    <text x="550" y="120" class="comp-label" fill="var(--io)">AutoDeviceMapping (自动设备映射 · 共置/解耦灵活切换)</text>
+
+    <!-- Resource Pool -->
+    <rect x="30" y="160" width="1040" height="420" rx="12" fill="none" stroke="#2e3345" stroke-width="1" stroke-dasharray="6,4"/>
+    <text x="50" y="155" font-size="11" fill="#8892a6">Resource Pool (GPU/CPU 资源池)</text>
+
+    <!-- Rollout Scheduler -->
+    <g id="box-scheduler">
+      <rect id="comp-scheduler" class="comp-box rollout" x="60" y="180" width="240" height="130"/>
+      <text x="180" y="210" class="comp-label">Rollout Scheduler</text>
+      <text x="180" y="230" class="comp-sublabel">样本生命周期管理</text>
+      <rect x="80" y="245" width="200" height="25" rx="4" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+      <text x="180" y="262" class="comp-sublabel" fill="var(--rollout)">Prompt → Response → Reward</text>
+      <rect x="80" y="278" width="200" height="25" rx="4" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+      <text x="180" y="295" class="comp-sublabel" fill="var(--rollout)">动态 FP8 Rollout (vLLM)</text>
+    </g>
+
+    <!-- Parallel Workers -->
+    <g id="box-workers">
+      <rect id="comp-workers" class="comp-box training" x="340" y="180" width="420" height="130"/>
+      <text x="550" y="210" class="comp-label">Parallel Workers</text>
+      <text x="550" y="230" class="comp-sublabel">Parallel Strategy 自动选择并行策略</text>
+
+      <rect x="360" y="245" width="120" height="50" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="420" y="265" class="comp-sublabel" fill="var(--training)">Actor</text>
+      <text x="420" y="280" class="comp-sublabel">(Megatron/FSDP)</text>
+
+      <rect x="500" y="245" width="120" height="50" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="560" y="265" class="comp-sublabel" fill="var(--training)">Critic</text>
+      <text x="560" y="280" class="comp-sublabel">(Value 网络)</text>
+
+      <rect x="640" y="245" width="100" height="50" rx="6" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.8"/>
+      <text x="690" y="265" class="comp-sublabel" fill="var(--data)">Reward</text>
+      <text x="690" y="280" class="comp-sublabel">(RM/规则)</text>
+    </g>
+
+    <!-- Reference -->
+    <g id="box-ref">
+      <rect id="comp-ref" class="comp-box io" x="800" y="180" width="250" height="130"/>
+      <text x="925" y="210" class="comp-label">Ref / 推理引擎</text>
+      <rect x="820" y="235" width="100" height="35" rx="4" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+      <text x="870" y="257" class="comp-sublabel" fill="var(--rollout)">vLLM</text>
+      <rect x="930" y="235" width="100" height="35" rx="4" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+      <text x="980" y="257" class="comp-sublabel" fill="var(--rollout)">SGLang</text>
+      <rect x="820" y="278" width="210" height="25" rx="4" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+      <text x="925" y="295" class="comp-sublabel" fill="var(--io)">Offload / Reload 能力</text>
+    </g>
+
+    <!-- ROLLMUX Layer -->
+    <rect x="60" y="330" width="500" height="80" rx="10" fill="rgba(74,158,255,.06)" stroke="var(--rollout)" stroke-width="1"/>
+    <text x="310" y="355" class="comp-label" fill="var(--rollout)">ROLLMUX (阶段级复用)</text>
+    <text x="310" y="375" class="comp-sublabel">轻量挂起策略 · 控制面/数据面解耦</text>
+    <text x="310" y="393" class="comp-sublabel" fill="var(--rollout)">1.84x 成本效率 (vs 标准解耦) · 1.38x (vs 共置)</text>
+
+    <!-- ROLLART Layer -->
+    <rect x="600" y="330" width="470" height="80" rx="10" fill="rgba(251,146,60,.06)" stroke="var(--data)" stroke-width="1"/>
+    <text x="835" y="355" class="comp-label" fill="var(--data)">ROLLART (Agentic RL 解耦基础设施)</text>
+    <text x="835" y="375" class="comp-sublabel">无状态组件 → Serverless (函数计算)</text>
+    <text x="835" y="393" class="comp-sublabel" fill="var(--data)">零开销弹性伸缩 · 多租户 · 容错</text>
+
+    <!-- Communication Layer -->
+    <rect x="60" y="430" width="1010" height="65" rx="10" fill="rgba(167,139,250,.06)" stroke="var(--io)" stroke-width="1"/>
+    <text x="565" y="455" class="comp-label" fill="var(--io)">通信与调度层</text>
+    <rect x="90" y="465" width="130" height="22" rx="4" fill="rgba(167,139,250,.1)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="155" y="480" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">Ray 分布式调度</text>
+    <rect x="240" y="465" width="120" height="22" rx="4" fill="rgba(167,139,250,.1)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="300" y="480" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">NCCL 集合通信</text>
+    <rect x="380" y="465" width="140" height="22" rx="4" fill="rgba(167,139,250,.1)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="450" y="480" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">gRPC / HTTP 推理</text>
+    <rect x="540" y="465" width="160" height="22" rx="4" fill="rgba(52,211,153,.1)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="620" y="480" style="font-size:9px" fill="var(--training)" text-anchor="middle" dominant-baseline="central">Megatron / DeepSpeed</text>
+    <rect x="720" y="465" width="140" height="22" rx="4" fill="rgba(251,146,60,.1)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="790" y="480" style="font-size:9px" fill="var(--data)" text-anchor="middle" dominant-baseline="central">Serverless Functions</text>
+    <rect x="880" y="465" width="160" height="22" rx="4" fill="rgba(74,158,255,.1)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="960" y="480" style="font-size:9px" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">ROLL Flash (异步加速)</text>
+
+    <!-- Training Modes -->
+    <rect x="60" y="510" width="1010" height="65" rx="10" fill="rgba(52,211,153,.04)" stroke="var(--training)" stroke-width="1"/>
+    <text x="565" y="535" class="comp-label" fill="var(--training)">训练模式</text>
+    <rect x="130" y="545" width="200" height="22" rx="4" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="230" y="560" style="font-size:9px" fill="var(--training)" text-anchor="middle" dominant-baseline="central">同步 On-Policy (PPO/GRPO/DAPO)</text>
+    <rect x="370" y="545" width="200" height="22" rx="4" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="470" y="560" style="font-size:9px" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">异步 (ROLL Flash)</text>
+    <rect x="610" y="545" width="200" height="22" rx="4" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="710" y="560" style="font-size:9px" fill="var(--data)" text-anchor="middle" dominant-baseline="central">Agentic RL (ROLLART)</text>
+    <rect x="850" y="545" width="180" height="22" rx="4" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="940" y="560" style="font-size:9px" fill="var(--io)" text-anchor="middle" dominant-baseline="central">共置 ↔ 解耦灵活切换</text>
+  </svg>
+
+  <!-- ===== Training Flow Animation ===== -->
+  <h2 class="section-title">RL 训练流程动画</h2>
+
+  <svg id="flow-svg" class="svg-canvas" viewBox="0 0 1100 380">
+    <rect width="1100" height="380" fill="#0f1117"/>
+
+    <!-- Stage boxes -->
+    <rect id="flow-automap" class="comp-box io" x="30" y="140" width="130" height="80"/>
+    <text x="95" y="170" class="comp-label">AutoDevice</text>
+    <text x="95" y="188" class="comp-sublabel">设备映射</text>
+
+    <rect id="flow-rollout" class="comp-box rollout" x="200" y="110" width="160" height="140"/>
+    <text x="280" y="145" class="comp-label">Rollout</text>
+    <text x="280" y="165" class="comp-sublabel">Scheduler 调度</text>
+    <text x="280" y="185" class="comp-sublabel">vLLM FP8 生成</text>
+    <text x="280" y="210" class="comp-sublabel" fill="var(--rollout)">● 动态批处理</text>
+    <text x="280" y="228" class="comp-sublabel" fill="var(--rollout)">● 样本生命周期</text>
+
+    <rect id="flow-reward" class="comp-box data" x="400" y="140" width="130" height="80"/>
+    <text x="465" y="170" class="comp-label">Reward</text>
+    <text x="465" y="188" class="comp-sublabel">ROLLART 弹性</text>
+
+    <rect id="flow-mux" class="comp-box rollout" x="570" y="140" width="130" height="80"/>
+    <text x="635" y="170" class="comp-label">ROLLMUX</text>
+    <text x="635" y="188" class="comp-sublabel">阶段复用</text>
+
+    <rect id="flow-adv" class="comp-box data" x="740" y="140" width="130" height="80"/>
+    <text x="805" y="170" class="comp-label">Advantage</text>
+    <text x="805" y="188" class="comp-sublabel">GAE / GRPO</text>
+
+    <rect id="flow-train" class="comp-box training" x="910" y="110" width="160" height="140"/>
+    <text x="990" y="145" class="comp-label">Training</text>
+    <text x="990" y="165" class="comp-sublabel">梯度更新</text>
+    <text x="990" y="185" class="comp-sublabel">Megatron/FSDP</text>
+    <text x="990" y="210" class="comp-sublabel" fill="var(--training)">● PPO Clip</text>
+    <text x="990" y="228" class="comp-sublabel" fill="var(--training)">● 异步流水线</text>
+
+    <!-- Arrows -->
+    <path id="fp-a2r" class="flow-arrow rollout" d="M 160 180 L 200 180" marker-end="url(#arrowhead-rollout)"/>
+    <path id="fp-r2w" class="flow-arrow data" d="M 360 180 L 400 180" marker-end="url(#arrowhead-data)"/>
+    <path id="fp-w2m" class="flow-arrow rollout" d="M 530 180 L 570 180" marker-end="url(#arrowhead-rollout)"/>
+    <path id="fp-m2a" class="flow-arrow data" d="M 700 180 L 740 180" marker-end="url(#arrowhead-data)"/>
+    <path id="fp-a2t" class="flow-arrow training" d="M 870 180 L 910 180" marker-end="url(#arrowhead-training)"/>
+
+    <!-- Loop back -->
+    <path id="fp-sync" class="flow-arrow io" d="M 990 250 Q 990 330 550 350 Q 95 330 95 220"
+          fill="none" marker-end="url(#arrowhead-io)" stroke-dasharray="6,3"/>
+    <text x="550" y="365" class="comp-sublabel" fill="var(--io)">权重同步 + Offload/Reload</text>
+
+    <!-- Particle paths -->
+    <path id="pp1" d="M 95 180 L 200 180" fill="none" stroke="none"/>
+    <path id="pp2" d="M 200 180 L 400 180" fill="none" stroke="none"/>
+    <path id="pp3" d="M 400 180 L 570 180" fill="none" stroke="none"/>
+    <path id="pp4" d="M 570 180 L 740 180" fill="none" stroke="none"/>
+    <path id="pp5" d="M 740 180 L 910 180" fill="none" stroke="none"/>
+    <path id="pp6" d="M 990 250 Q 990 330 550 350 Q 95 330 95 220" fill="none" stroke="none"/>
+  </svg>
+
+  <div id="controls"></div>
+
+  <!-- Info Cards -->
+  <div class="info-grid">
+    <div class="info-card rollout">
+      <h3>Rollout / Generation</h3>
+      <ul>
+        <li>Rollout Scheduler 管理样本全生命周期</li>
+        <li>支持 vLLM + 动态 FP8 推理</li>
+        <li>ROLLMUX 阶段级 GPU 复用</li>
+        <li>轻量挂起: 保留控制面, 释放 GPU</li>
+        <li>remove_padding 加速</li>
+      </ul>
+    </div>
+    <div class="info-card training">
+      <h3>Training / Optimization</h3>
+      <ul>
+        <li>Megatron-LM / FSDP / DeepSpeed</li>
+        <li>PPO / GRPO / DAPO 算法</li>
+        <li>ROLL Flash 异步训练加速</li>
+        <li>Parallel Strategy 自动并行选择</li>
+        <li>支持 AMD GPU (ROCm)</li>
+      </ul>
+    </div>
+    <div class="info-card data">
+      <h3>Data Processing</h3>
+      <ul>
+        <li>AutoDeviceMapping 自动资源分配</li>
+        <li>共置/解耦灵活切换</li>
+        <li>ROLLART 无状态组件 → Serverless</li>
+        <li>零开销弹性伸缩</li>
+        <li>极致 Offload/Reload 能力</li>
+      </ul>
+    </div>
+    <div class="info-card io">
+      <h3>I/O & Communication</h3>
+      <ul>
+        <li>Ray 分布式调度</li>
+        <li>NCCL 集合通信</li>
+        <li>gRPC/HTTP 推理引擎通信</li>
+        <li>ROLLART: 函数计算集成</li>
+        <li>ROCK 扩展工具包</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Metrics -->
+  <h2 class="section-title">关键性能数据</h2>
+  <div class="comparison-row">
+    <div class="comparison-cell">
+      <h4>ROLLMUX 成本效率</h4>
+      <div style="font-size:1.4rem;color:var(--rollout);font-weight:700">1.84x</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">vs 标准解耦部署</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>vs 共置基线</h4>
+      <div style="font-size:1.4rem;color:var(--training);font-weight:700">1.38x</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">ROLLMUX 成本效率</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>SLO 达成率</h4>
+      <div style="font-size:1.4rem;color:var(--data);font-weight:700">100%</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">ROLLMUX 服务质量</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>部署模式</h4>
+      <div style="font-size:1.4rem;color:var(--io);font-weight:700">3 种</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">共置/解耦/Serverless</div>
+    </div>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('svg').forEach(svg => injectArrowMarkers(svg));
+  buildLegend(document.getElementById('legend'));
+
+  const flowSvg = document.getElementById('flow-svg');
+  const stages = [
+    { id: 'automap', label: '设备映射', category: 'io', duration: 1200,
+      components: ['flow-automap'], arrows: ['fp-a2r'],
+      particles: [{ pathId: 'pp1', category: 'io', count: 3, stagger: 0.2 }] },
+    { id: 'rollout', label: 'Rollout', category: 'rollout', duration: 2800,
+      components: ['flow-automap', 'flow-rollout'], arrows: ['fp-a2r', 'fp-r2w'],
+      particles: [{ pathId: 'pp2', category: 'rollout', count: 5, stagger: 0.12 }] },
+    { id: 'reward', label: '奖励计算', category: 'data', duration: 1500,
+      components: ['flow-rollout', 'flow-reward'], arrows: ['fp-r2w', 'fp-w2m'],
+      particles: [{ pathId: 'pp3', category: 'data', count: 4, stagger: 0.15 }] },
+    { id: 'mux', label: 'ROLLMUX', category: 'rollout', duration: 1200,
+      components: ['flow-reward', 'flow-mux'], arrows: ['fp-w2m', 'fp-m2a'],
+      particles: [{ pathId: 'pp4', category: 'rollout', count: 3, stagger: 0.2 }] },
+    { id: 'adv', label: 'Advantage', category: 'data', duration: 1000,
+      components: ['flow-mux', 'flow-adv'], arrows: ['fp-m2a', 'fp-a2t'],
+      particles: [{ pathId: 'pp5', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'train', label: '梯度更新', category: 'training', duration: 2500,
+      components: ['flow-adv', 'flow-train'], arrows: ['fp-a2t'],
+      particles: [{ pathId: 'pp5', category: 'training', count: 4, stagger: 0.15 }] },
+    { id: 'sync', label: '权重同步', category: 'io', duration: 1800,
+      components: ['flow-train', 'flow-automap'], arrows: ['fp-sync'],
+      particles: [{ pathId: 'pp6', category: 'io', count: 5, stagger: 0.1 }] },
+  ];
+
+  const animator = new TrainingFlowAnimator(flowSvg, stages, { loop: true });
+  animator.mount(document.getElementById('controls'));
+});
+</script>
+</body>
+</html>

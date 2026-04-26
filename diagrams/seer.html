@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seer - 架构与训练流程</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Seer (月之暗面 / Kimi)</h1>
+  <p class="subtitle">Moonshot AI · Divided Rollout · DGDS 动态 GPU 分配 · 同步 On-Policy 训练</p>
+</div>
+
+<div class="diagram-container">
+  <div id="legend"></div>
+
+  <h2 class="section-title">系统架构</h2>
+
+  <svg id="arch-svg" class="svg-canvas" viewBox="0 0 1100 580">
+    <defs>
+      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e2233" stroke-width="0.5"/>
+      </pattern>
+    </defs>
+    <rect width="1100" height="580" fill="url(#grid)"/>
+
+    <!-- Top: Core insight -->
+    <rect x="150" y="15" width="800" height="35" rx="6" fill="rgba(99,102,241,.1)" stroke="#6366f1" stroke-width="1"/>
+    <text x="550" y="37" class="comp-sublabel" fill="#6366f1">核心洞见: 长 CoT 推理场景下, Rollout 耗时占比极高 → 需要 Divided Rollout 消除气泡</text>
+
+    <!-- DGDS: Dynamic GPU Distribution Strategy -->
+    <rect x="60" y="65" width="980" height="55" rx="10" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="1.5"/>
+    <text x="550" y="88" class="comp-label" fill="var(--io)">DGDS: 动态 GPU 分配策略</text>
+    <text x="550" y="105" class="comp-sublabel">根据 Rollout/Training 实际负载动态调整 GPU 划分 · 最小化空闲气泡</text>
+
+    <!-- Divided Rollout -->
+    <g id="box-rollout">
+      <rect id="comp-rollout" class="comp-box rollout" x="60" y="140" width="530" height="210"/>
+      <text x="325" y="168" class="comp-label">Divided Rollout (分段式生成)</text>
+
+      <!-- Three sub-phases -->
+      <rect x="80" y="185" width="155" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="158" y="205" class="comp-sublabel" fill="var(--rollout)">Prefill 阶段</text>
+      <text x="158" y="222" class="comp-sublabel">Prompt 编码</text>
+      <text x="158" y="240" class="comp-sublabel">KV Cache 构建</text>
+
+      <rect x="250" y="185" width="155" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="328" y="205" class="comp-sublabel" fill="var(--rollout)">Decode 阶段 1-N</text>
+      <text x="328" y="222" class="comp-sublabel">分段 Token 生成</text>
+      <text x="328" y="240" class="comp-sublabel">流式输出</text>
+
+      <rect x="420" y="185" width="155" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="498" y="205" class="comp-sublabel" fill="var(--rollout)">Segment Concat</text>
+      <text x="498" y="222" class="comp-sublabel">分段拼接</text>
+      <text x="498" y="240" class="comp-sublabel">完整序列重组</text>
+
+      <rect x="80" y="270" width="490" height="35" rx="6" fill="rgba(74,158,255,.06)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="325" y="292" class="comp-sublabel" fill="var(--rollout)">训练期间释放 Rollout GPU → Training 使用 · 生成与训练交叉执行</text>
+
+      <rect x="80" y="315" width="490" height="28" rx="4" fill="rgba(251,146,60,.06)" stroke="var(--data)" stroke-width="0.5"/>
+      <text x="325" y="333" class="comp-sublabel" fill="var(--data)">长 CoT: 数千 Token 推理链 · 传统方法 Rollout 占 80%+ 时间</text>
+    </g>
+
+    <!-- Training -->
+    <g id="box-training">
+      <rect id="comp-training" class="comp-box training" x="620" y="140" width="430" height="210"/>
+      <text x="835" y="168" class="comp-label">Training 引擎</text>
+
+      <rect x="640" y="185" width="190" height="70" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="735" y="205" class="comp-sublabel" fill="var(--training)">Actor 梯度更新</text>
+      <text x="735" y="222" class="comp-sublabel">PPO / GRPO 算法</text>
+      <text x="735" y="240" class="comp-sublabel">同步 On-Policy</text>
+
+      <rect x="845" y="185" width="190" height="70" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="940" y="205" class="comp-sublabel" fill="var(--training)">Critic 更新</text>
+      <text x="940" y="222" class="comp-sublabel">Value 函数估计</text>
+      <text x="940" y="240" class="comp-sublabel">GAE Advantage</text>
+
+      <rect x="640" y="270" width="395" height="35" rx="6" fill="rgba(52,211,153,.06)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="838" y="292" class="comp-sublabel" fill="var(--training)">Rollout GPU 释放后动态接管 · DGDS 最优分配</text>
+
+      <rect x="640" y="315" width="395" height="28" rx="4" fill="rgba(52,211,153,.05)" stroke="var(--training)" stroke-width="0.5"/>
+      <text x="838" y="333" class="comp-sublabel" fill="var(--training)">严格 On-Policy: 确保训练数据来自当前策略</text>
+    </g>
+
+    <!-- Data Processing Layer -->
+    <rect x="60" y="370" width="990" height="80" rx="10" fill="rgba(251,146,60,.06)" stroke="var(--data)" stroke-width="1"/>
+    <text x="550" y="395" class="comp-label" fill="var(--data)">数据处理层</text>
+
+    <rect x="90" y="410" width="200" height="30" rx="4" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="190" y="430" class="comp-sublabel" fill="var(--data)">Reward 计算 (RM/规则)</text>
+
+    <rect x="310" y="410" width="200" height="30" rx="4" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="410" y="430" class="comp-sublabel" fill="var(--data)">Advantage 估计 (GAE)</text>
+
+    <rect x="530" y="410" width="200" height="30" rx="4" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="630" y="430" class="comp-sublabel" fill="var(--data)">分段序列重组</text>
+
+    <rect x="750" y="410" width="270" height="30" rx="4" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.5"/>
+    <text x="885" y="430" class="comp-sublabel" fill="var(--data)">长 CoT 序列处理优化</text>
+
+    <!-- Communication Layer -->
+    <rect x="60" y="470" width="990" height="90" rx="10" fill="rgba(167,139,250,.05)" stroke="var(--io)" stroke-width="0.8"/>
+    <text x="550" y="495" class="comp-label" fill="var(--io)">通信与基础设施</text>
+
+    <rect x="100" y="510" width="170" height="35" rx="6" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="185" y="525" class="comp-sublabel" fill="var(--io)">NCCL 集合通信</text>
+    <text x="185" y="540" class="comp-sublabel">GPU 间参数同步</text>
+
+    <rect x="290" y="510" width="170" height="35" rx="6" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="375" y="525" class="comp-sublabel" fill="var(--io)">GPU 动态重分配</text>
+    <text x="375" y="540" class="comp-sublabel">DGDS 调度器</text>
+
+    <rect x="480" y="510" width="170" height="35" rx="6" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="565" y="525" class="comp-sublabel" fill="var(--io)">权重重分片</text>
+    <text x="565" y="540" class="comp-sublabel">Rollout ↔ Training</text>
+
+    <rect x="670" y="510" width="170" height="35" rx="6" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="755" y="525" class="comp-sublabel" fill="var(--training)">分布式训练</text>
+    <text x="755" y="540" class="comp-sublabel">DP + TP 并行</text>
+
+    <rect x="860" y="510" width="160" height="35" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="940" y="525" class="comp-sublabel" fill="var(--rollout)">推理优化</text>
+    <text x="940" y="540" class="comp-sublabel">长序列处理</text>
+  </svg>
+
+  <h2 class="section-title">Divided Rollout 训练流程动画</h2>
+
+  <svg id="flow-svg" class="svg-canvas" viewBox="0 0 1100 400">
+    <rect width="1100" height="400" fill="#0f1117"/>
+
+    <!-- Timeline visualization showing interleaved rollout/training -->
+    <text x="30" y="30" class="comp-sublabel" fill="var(--text-muted)">传统方式 (大量气泡):</text>
+    <rect x="30" y="40" width="500" height="25" rx="4" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="280" y="57" class="comp-sublabel" fill="var(--rollout)">Rollout (长 CoT 生成 ~80% 时间)</text>
+    <rect x="530" y="40" width="200" height="25" rx="4" fill="var(--training-bg)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="630" y="57" class="comp-sublabel" fill="var(--training)">Training (~20%)</text>
+    <rect x="730" y="40" width="60" height="25" rx="4" fill="rgba(100,100,100,.2)" stroke="#555" stroke-width="0.5"/>
+    <text x="760" y="57" class="comp-sublabel" fill="#888">空闲</text>
+
+    <text x="30" y="90" class="comp-sublabel" fill="var(--text-muted)">Divided Rollout (交叉执行):</text>
+    <rect x="30" y="100" width="120" height="25" rx="4" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="90" y="117" class="comp-sublabel" fill="var(--rollout)">R-Seg1</text>
+    <rect x="150" y="100" width="100" height="25" rx="4" fill="var(--training-bg)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="200" y="117" class="comp-sublabel" fill="var(--training)">T-Seg1</text>
+    <rect x="250" y="100" width="120" height="25" rx="4" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="310" y="117" class="comp-sublabel" fill="var(--rollout)">R-Seg2</text>
+    <rect x="370" y="100" width="100" height="25" rx="4" fill="var(--training-bg)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="420" y="117" class="comp-sublabel" fill="var(--training)">T-Seg2</text>
+    <rect x="470" y="100" width="120" height="25" rx="4" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="0.5"/>
+    <text x="530" y="117" class="comp-sublabel" fill="var(--rollout)">R-Seg3</text>
+    <rect x="590" y="100" width="100" height="25" rx="4" fill="var(--training-bg)" stroke="var(--training)" stroke-width="0.5"/>
+    <text x="640" y="117" class="comp-sublabel" fill="var(--training)">T-Seg3</text>
+    <rect x="690" y="100" width="100" height="25" rx="4" fill="var(--io-bg)" stroke="var(--io)" stroke-width="0.5"/>
+    <text x="740" y="117" class="comp-sublabel" fill="var(--io)">Sync</text>
+
+    <!-- Flow diagram -->
+    <rect id="flow-prompt" class="comp-box data" x="30" y="170" width="110" height="70"/>
+    <text x="85" y="200" class="comp-label">Prompt</text>
+    <text x="85" y="215" class="comp-sublabel">数据准备</text>
+
+    <rect id="flow-seg1" class="comp-box rollout" x="175" y="155" width="130" height="100"/>
+    <text x="240" y="185" class="comp-label">Rollout Seg</text>
+    <text x="240" y="205" class="comp-sublabel">分段生成</text>
+    <text x="240" y="225" class="comp-sublabel" fill="var(--rollout)">● Divided 分段</text>
+    <text x="240" y="240" class="comp-sublabel" fill="var(--rollout)">● GPU 释放</text>
+
+    <rect id="flow-dgds" class="comp-box io" x="340" y="170" width="110" height="70"/>
+    <text x="395" y="200" class="comp-label">DGDS</text>
+    <text x="395" y="215" class="comp-sublabel">GPU 重分配</text>
+
+    <rect id="flow-reward" class="comp-box data" x="485" y="170" width="110" height="70"/>
+    <text x="540" y="200" class="comp-label">Reward</text>
+    <text x="540" y="215" class="comp-sublabel">奖励计算</text>
+
+    <rect id="flow-adv" class="comp-box data" x="630" y="170" width="110" height="70"/>
+    <text x="685" y="200" class="comp-label">Advantage</text>
+    <text x="685" y="215" class="comp-sublabel">GAE</text>
+
+    <rect id="flow-train" class="comp-box training" x="775" y="155" width="150" height="100"/>
+    <text x="850" y="185" class="comp-label">Training</text>
+    <text x="850" y="205" class="comp-sublabel">On-Policy 更新</text>
+    <text x="850" y="225" class="comp-sublabel" fill="var(--training)">● Actor + Critic</text>
+    <text x="850" y="240" class="comp-sublabel" fill="var(--training)">● DGDS 接管 GPU</text>
+
+    <rect id="flow-sync" class="comp-box io" x="960" y="170" width="110" height="70"/>
+    <text x="1015" y="200" class="comp-label">Weight</text>
+    <text x="1015" y="215" class="comp-sublabel">同步</text>
+
+    <path id="fp1" class="flow-arrow rollout" d="M 140 205 L 175 205" marker-end="url(#arrowhead-rollout)"/>
+    <path id="fp2" class="flow-arrow io" d="M 305 205 L 340 205" marker-end="url(#arrowhead-io)"/>
+    <path id="fp3" class="flow-arrow data" d="M 450 205 L 485 205" marker-end="url(#arrowhead-data)"/>
+    <path id="fp4" class="flow-arrow data" d="M 595 205 L 630 205" marker-end="url(#arrowhead-data)"/>
+    <path id="fp5" class="flow-arrow training" d="M 740 205 L 775 205" marker-end="url(#arrowhead-training)"/>
+    <path id="fp6" class="flow-arrow io" d="M 925 205 L 960 205" marker-end="url(#arrowhead-io)"/>
+    <path id="fp-back" class="flow-arrow io" d="M 1015 240 Q 1015 330 550 350 Q 85 330 85 240"
+          fill="none" marker-end="url(#arrowhead-io)" stroke-dasharray="6,3"/>
+    <text x="550" y="370" class="comp-sublabel" fill="var(--io)">循环: 下一个 Divided Rollout 段</text>
+
+    <path id="pp1" d="M 85 205 L 175 205" fill="none" stroke="none"/>
+    <path id="pp2" d="M 175 205 L 340 205" fill="none" stroke="none"/>
+    <path id="pp3" d="M 340 205 L 485 205" fill="none" stroke="none"/>
+    <path id="pp4" d="M 485 205 L 630 205" fill="none" stroke="none"/>
+    <path id="pp5" d="M 630 205 L 775 205" fill="none" stroke="none"/>
+    <path id="pp6" d="M 775 205 L 960 205" fill="none" stroke="none"/>
+    <path id="pp7" d="M 1015 240 Q 1015 330 550 350 Q 85 330 85 240" fill="none" stroke="none"/>
+  </svg>
+
+  <div id="controls"></div>
+
+  <div class="info-grid">
+    <div class="info-card rollout">
+      <h3>Rollout / Generation</h3>
+      <ul>
+        <li>Divided Rollout: 分段式生成</li>
+        <li>长 CoT 推理链 (数千 Token)</li>
+        <li>Rollout 完成后释放 GPU</li>
+        <li>与 Training 交叉执行</li>
+        <li>消除传统 80%+ Rollout 气泡</li>
+      </ul>
+    </div>
+    <div class="info-card training">
+      <h3>Training / Optimization</h3>
+      <ul>
+        <li>严格同步 On-Policy 训练</li>
+        <li>PPO / GRPO 算法</li>
+        <li>DGDS 动态接管释放的 GPU</li>
+        <li>Actor + Critic 并行更新</li>
+        <li>确保训练数据来自当前策略</li>
+      </ul>
+    </div>
+    <div class="info-card data">
+      <h3>Data Processing</h3>
+      <ul>
+        <li>分段序列拼接与重组</li>
+        <li>Reward 计算 (RM/规则)</li>
+        <li>GAE Advantage 估计</li>
+        <li>长序列处理优化</li>
+        <li>多段数据缓冲管理</li>
+      </ul>
+    </div>
+    <div class="info-card io">
+      <h3>I/O & Communication</h3>
+      <ul>
+        <li>DGDS: 动态 GPU 分配策略</li>
+        <li>GPU 资源在 Rollout↔Training 间切换</li>
+        <li>NCCL 参数同步</li>
+        <li>权重重分片</li>
+        <li>KV Cache 管理</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2 class="section-title">关键性能数据</h2>
+  <div class="comparison-row">
+    <div class="comparison-cell">
+      <h4>核心创新</h4>
+      <div style="font-size:1.2rem;color:var(--rollout);font-weight:700">Divided Rollout</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">分段生成消除气泡</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>GPU 利用率提升</h4>
+      <div style="font-size:1.2rem;color:var(--training);font-weight:700">DGDS</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">动态 GPU 分配策略</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>训练模式</h4>
+      <div style="font-size:1.2rem;color:var(--data);font-weight:700">同步 On-Policy</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">严格策略一致性</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>目标场景</h4>
+      <div style="font-size:1.2rem;color:var(--io);font-weight:700">长 CoT 推理</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">Kimi 推理模型训练</div>
+    </div>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('svg').forEach(svg => injectArrowMarkers(svg));
+  buildLegend(document.getElementById('legend'));
+
+  const flowSvg = document.getElementById('flow-svg');
+  const stages = [
+    { id: 'prompt', label: 'Prompt', category: 'data', duration: 1000,
+      components: ['flow-prompt'], arrows: ['fp1'],
+      particles: [{ pathId: 'pp1', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'seg', label: 'Rollout Seg', category: 'rollout', duration: 2500,
+      components: ['flow-prompt', 'flow-seg1'], arrows: ['fp1', 'fp2'],
+      particles: [{ pathId: 'pp2', category: 'rollout', count: 5, stagger: 0.12 }] },
+    { id: 'dgds', label: 'DGDS', category: 'io', duration: 1000,
+      components: ['flow-seg1', 'flow-dgds'], arrows: ['fp2', 'fp3'],
+      particles: [{ pathId: 'pp3', category: 'io', count: 3, stagger: 0.2 }] },
+    { id: 'reward', label: 'Reward', category: 'data', duration: 1200,
+      components: ['flow-dgds', 'flow-reward'], arrows: ['fp3', 'fp4'],
+      particles: [{ pathId: 'pp4', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'adv', label: 'Advantage', category: 'data', duration: 1000,
+      components: ['flow-reward', 'flow-adv'], arrows: ['fp4', 'fp5'],
+      particles: [{ pathId: 'pp5', category: 'data', count: 3, stagger: 0.2 }] },
+    { id: 'train', label: 'Training', category: 'training', duration: 2500,
+      components: ['flow-adv', 'flow-train'], arrows: ['fp5', 'fp6'],
+      particles: [{ pathId: 'pp6', category: 'training', count: 4, stagger: 0.15 }] },
+    { id: 'sync', label: '权重同步', category: 'io', duration: 1500,
+      components: ['flow-train', 'flow-sync'], arrows: ['fp6', 'fp-back'],
+      particles: [{ pathId: 'pp7', category: 'io', count: 5, stagger: 0.1 }] },
+  ];
+
+  const animator = new TrainingFlowAnimator(flowSvg, stages, { loop: true });
+  animator.mount(document.getElementById('controls'));
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>7 系统对比 - Agentic RL 训练系统</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  .cmp-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin: 1rem 0; }
+  .cmp-table th, .cmp-table td { padding: 0.6rem 0.5rem; border: 1px solid var(--border); text-align: center; }
+  .cmp-table th { background: var(--surface-2); color: var(--text-muted); font-weight: 600; position: sticky; top: 0; }
+  .cmp-table td { background: var(--surface); }
+  .cmp-table tr:hover td { background: var(--surface-2); }
+  .chip { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.65rem; margin: 0.1rem; }
+  .chip.r { background: var(--rollout-bg); color: var(--rollout); border: 1px solid var(--rollout); }
+  .chip.t { background: var(--training-bg); color: var(--training); border: 1px solid var(--training); }
+  .chip.d { background: var(--data-bg); color: var(--data); border: 1px solid var(--data); }
+  .chip.i { background: var(--io-bg); color: var(--io); border: 1px solid var(--io); }
+  .highlight-num { font-size: 1rem; font-weight: 700; }
+  .section-tabs { display: flex; gap: 0.5rem; margin: 1rem 0; flex-wrap: wrap; }
+  .section-tab { padding: 0.4rem 1rem; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-muted); cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
+  .section-tab:hover, .section-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .cmp-section { display: none; }
+  .cmp-section.active { display: block; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>7 系统横向对比</h1>
+  <p class="subtitle">Agentic RL 训练系统基础设施对比分析</p>
+</div>
+
+<div class="diagram-container">
+  <div id="legend"></div>
+
+  <!-- Tab navigation -->
+  <div class="section-tabs">
+    <div class="section-tab active" data-tab="overview">总览</div>
+    <div class="section-tab" data-tab="rollout">Rollout</div>
+    <div class="section-tab" data-tab="training">Training</div>
+    <div class="section-tab" data-tab="data">Data Processing</div>
+    <div class="section-tab" data-tab="io">I/O & 通信</div>
+    <div class="section-tab" data-tab="agentic">Agentic 维度</div>
+    <div class="section-tab" data-tab="reward">奖励建模</div>
+    <div class="section-tab" data-tab="innovation">创新点</div>
+  </div>
+
+  <!-- Overview -->
+  <div class="cmp-section active" id="tab-overview">
+    <h2 class="section-title">系统总览对比</h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>组织</th><th>架构模式</th><th>控制器</th><th>耦合度</th><th>核心创新</th><th>最大模型</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td><td>字节跳动</td>
+        <td><span class="chip i">单控制器+SPMD</span></td>
+        <td>集中式</td><td>共置 (可解耦)</td>
+        <td><span class="chip t">HybridFlow</span> <span class="chip i">3D-HybridEngine</span></td>
+        <td>671B MoE</td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td><td>阿里巴巴</td>
+        <td><span class="chip i">单控制器</span></td>
+        <td>集中式</td><td>灵活 (3模式)</td>
+        <td><span class="chip r">ROLLMUX</span> <span class="chip d">ROLLART</span></td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td><td>清华 THUDM</td>
+        <td><span class="chip r">SGLang+Megatron</span></td>
+        <td>编排层</td><td>解耦</td>
+        <td><span class="chip r">APRIL</span> <span class="chip r">SlimeRouter</span></td>
+        <td>355B MoE</td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td><td>RadixArk</td>
+        <td><span class="chip r">SGLang+Megatron</span></td>
+        <td>编排层</td><td>解耦</td>
+        <td><span class="chip d">R3 路由回放</span> <span class="chip t">FP8 E2E</span></td>
+        <td>1TB (INT4)</td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td><td>MiniMax</td>
+        <td><span class="chip d">三层中间件</span></td>
+        <td>中间件</td><td>完全解耦</td>
+        <td><span class="chip t">CISPO</span> <span class="chip r">Prefix Tree</span></td>
+        <td>230B MoE</td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td><td>月之暗面</td>
+        <td><span class="chip r">Divided Rollout</span></td>
+        <td>集中式</td><td>动态切换</td>
+        <td><span class="chip r">Divided Rollout</span> <span class="chip i">DGDS</span></td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td><td>Gensyn</td>
+        <td><span class="chip i">P2P 去中心化</span></td>
+        <td>无中心</td><td>完全解耦</td>
+        <td><span class="chip t">SAPO</span> <span class="chip i">P2P 训练</span></td>
+        <td>小模型</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Rollout -->
+  <div class="cmp-section" id="tab-rollout">
+    <h2 class="section-title">Rollout / Generation 对比</h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>推理引擎</th><th>推理模式</th><th>投机解码</th><th>长尾处理</th><th>上下文长度</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td>
+        <td>vLLM / SGLang / TRT-LLM</td>
+        <td>Server 模式 (v0.7)</td>
+        <td>-</td>
+        <td>AgentLoop 多轮</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td>
+        <td>vLLM / SGLang</td>
+        <td>动态 FP8</td>
+        <td>-</td>
+        <td>Scheduler 管理</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td>
+        <td>SGLang</td>
+        <td>HTTP Server</td>
+        <td>-</td>
+        <td>APRIL 部分 Rollout</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td>
+        <td>SGLang (FP8)</td>
+        <td>HTTP Server</td>
+        <td>在线 SFT MTP (25%+)</td>
+        <td>APRIL + 过采样</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td>
+        <td>自研 LLM Engine</td>
+        <td>PD 解耦</td>
+        <td>MTP 投机解码</td>
+        <td>Windowed FIFO</td>
+        <td>200K</td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td>
+        <td>自研</td>
+        <td>Divided Rollout 分段</td>
+        <td>-</td>
+        <td>分段消除气泡</td>
+        <td>长 CoT</td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td>
+        <td>vLLM / 本地</td>
+        <td>本地推理</td>
+        <td>-</td>
+        <td>-</td>
+        <td>-</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Training -->
+  <div class="cmp-section" id="tab-training">
+    <h2 class="section-title">Training / Optimization 对比</h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>训练引擎</th><th>并行策略</th><th>算法</th><th>训练模式</th><th>量化</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td>
+        <td>FSDP / Megatron</td>
+        <td>5D (DP+TP+PP+CP+EP)</td>
+        <td>PPO/GRPO/DAPO/DPO</td>
+        <td>同步+异步</td>
+        <td>实验性 FP8</td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td>
+        <td>Megatron / FSDP / DS</td>
+        <td>自动选择</td>
+        <td>PPO/GRPO/DAPO</td>
+        <td>同步+异步(Flash)</td>
+        <td>FP8 Rollout</td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td>
+        <td>Megatron (mbridge)</td>
+        <td>TP+PP+DP+CP+EP</td>
+        <td>PPO/GRPO</td>
+        <td>同步+异步</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td>
+        <td>Megatron (mbridge)</td>
+        <td>TP+PP+DP+EP</td>
+        <td>GRPO/PPO/DAPO</td>
+        <td>同步+异步</td>
+        <td>FP8 E2E / INT4 QAT</td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td>
+        <td>自研 (Magi Attention)</td>
+        <td>自研并行</td>
+        <td>CISPO</td>
+        <td>混合域统一</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td>
+        <td>自研</td>
+        <td>DP+TP</td>
+        <td>PPO/GRPO</td>
+        <td>严格同步 On-Policy</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td>
+        <td>trl + Hivemind</td>
+        <td>P2P AllReduce</td>
+        <td>SAPO (GRPO改进)</td>
+        <td>去中心化异步</td>
+        <td>-</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Data Processing -->
+  <div class="cmp-section" id="tab-data">
+    <h2 class="section-title">Data Processing 对比</h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>数据协议</th><th>缓冲区</th><th>数据分发</th><th>序列优化</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td>
+        <td>DataProto → TensorDict</td>
+        <td>TransferQueue</td>
+        <td>Dispatch.DP_COMPUTE_PROTO</td>
+        <td>零拷贝 · RDMA</td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td>
+        <td>内部协议</td>
+        <td>Resource Pool</td>
+        <td>AutoDeviceMapping</td>
+        <td>Offload/Reload</td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td>
+        <td>HTTP 请求/响应</td>
+        <td>Data Buffer + Ray Store</td>
+        <td>SlimeRouter 负载均衡</td>
+        <td>Sequence Packing</td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td>
+        <td>R3 Mask + 张量</td>
+        <td>Data Buffer</td>
+        <td>路由回放桥</td>
+        <td>FP8 精度一致</td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td>
+        <td>OpenAI API</td>
+        <td>Data Pool (分布式)</td>
+        <td>Gateway Server</td>
+        <td>Prefix Tree Merging</td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td>
+        <td>分段序列</td>
+        <td>段缓冲</td>
+        <td>DGDS 动态分配</td>
+        <td>分段拼接重组</td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td>
+        <td>Gossip 消息</td>
+        <td>本地存储</td>
+        <td>P2P 广播</td>
+        <td>-</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- I/O -->
+  <div class="cmp-section" id="tab-io">
+    <h2 class="section-title">I/O & 通信 对比</h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>调度框架</th><th>集合通信</th><th>推理通信</th><th>权重同步</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td>
+        <td>Ray</td>
+        <td>NCCL</td>
+        <td>gRPC/HTTP</td>
+        <td>3D-HybridEngine / NIXL / NCCL</td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td>
+        <td>Ray</td>
+        <td>NCCL</td>
+        <td>gRPC/HTTP</td>
+        <td>ROLLMUX 挂起/恢复</td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td>
+        <td>Ray</td>
+        <td>NCCL</td>
+        <td>HTTP (SGLang)</td>
+        <td>UpdateWeight (共置/分布式)</td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td>
+        <td>Ray</td>
+        <td>NCCL</td>
+        <td>HTTP (SGLang)</td>
+        <td>CUDA IPC 零拷贝 (50%↓)</td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td>
+        <td>自研中间件</td>
+        <td>自研</td>
+        <td>OpenAI API</td>
+        <td>L3 KV Cache Pool</td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td>
+        <td>自研</td>
+        <td>NCCL</td>
+        <td>内部 RPC</td>
+        <td>DGDS 动态重分片</td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td>
+        <td>Hivemind</td>
+        <td>P2P AllReduce</td>
+        <td>libp2p</td>
+        <td>Gossip 广播</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Agentic Dimensions -->
+  <div class="cmp-section" id="tab-agentic">
+    <h2 class="section-title">Agentic 能力支持度 <span style="font-size:0.7rem;color:var(--text-muted)">(参考 arXiv 2509.02547 分类体系)</span></h2>
+    <table class="cmp-table">
+      <tr>
+        <th>能力</th><th>verl</th><th>ROLL</th><th>SLIME</th><th>MILES</th><th>Forge</th><th>Seer</th><th>rl-swarm</th>
+      </tr>
+      <tr>
+        <td><b>Planning</b></td><td>◐ AgentLoop</td><td>◐ 异步流水线</td><td>○</td><td>○</td><td>● Gateway</td><td>◐ Divided</td><td>◐ GameMgr</td>
+      </tr>
+      <tr>
+        <td><b>Tool Use</b></td><td>◐ Server API</td><td>● 环境级异步</td><td>◐ HTTP</td><td>◐ HTTP</td><td><span class="chip t">● 数千工具</span></td><td>◐</td><td>◐ 代码执行</td>
+      </tr>
+      <tr>
+        <td><b>Memory</b></td><td>○</td><td>○</td><td>◐ RadixTrie</td><td>◐ RadixTrie</td><td><span class="chip r">● KV Pool</span></td><td><span class="chip r">● Mooncake</span></td><td>○</td>
+      </tr>
+      <tr>
+        <td><b>Reasoning</b></td><td>● GRPO/DAPO</td><td>● GRPO/DAPO</td><td>● GRPO</td><td>● R3+GRPO</td><td>● CISPO</td><td>● DGDS</td><td>◐ SAPO</td>
+      </tr>
+      <tr>
+        <td><b>Self-Improve</b></td><td>◐ 异步</td><td>◐ Flash</td><td>◐ 异步</td><td>◐ 在线SFT</td><td>● 混合域</td><td>○</td><td>◐ Swarm</td>
+      </tr>
+      <tr>
+        <td><b>Multi-Agent</b></td><td>○</td><td>○</td><td>○</td><td><span class="chip d">● MrlX</span></td><td>● 多Agent</td><td>○</td><td><span class="chip i">● P2P</span></td>
+      </tr>
+    </table>
+    <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem">● 完整支持 | ◐ 部分支持 | ○ 不支持/未明确</p>
+
+    <h2 class="section-title">RL 粒度与 MDP 建模</h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>MDP 类型</th><th>RL 粒度</th><th>多轮支持</th><th>Critic</th>
+      </tr>
+      <tr><td><b>verl</b></td><td>单步→POMDP演进</td><td>Token/Trajectory</td><td>AgentLoop</td><td>✅ PPO</td></tr>
+      <tr><td><b>ROLL</b></td><td>单步→POMDP</td><td>灵活切换</td><td>4种异步模式</td><td>✅</td></tr>
+      <tr><td><b>SLIME</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>有限</td><td>✅ PPO</td></tr>
+      <tr><td><b>MILES</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>MrlX</td><td>❌ GRPO</td></tr>
+      <tr><td><b>Forge</b></td><td><span class="chip t">POMDP 原生</span></td><td><span class="chip t">Turn 级</span></td><td>原生多轮</td><td>❌ CISPO</td></tr>
+      <tr><td><b>Seer</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>—</td><td>✅ PPO</td></tr>
+      <tr><td><b>rl-swarm</b></td><td>POMDP</td><td>Trajectory</td><td>多轮代码</td><td>❌ SAPO</td></tr>
+    </table>
+  </div>
+
+  <!-- Reward Modeling -->
+  <div class="cmp-section" id="tab-reward">
+    <h2 class="section-title">奖励建模对比 <span style="font-size:0.7rem;color:var(--text-muted)">(参考 arXiv 2509.02547)</span></h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>奖励类型</th><th>奖励粒度</th><th>RLVR 支持</th><th>Critic 模型</th><th>核心算法</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td><td>ORM + Rule + Model</td><td>Trajectory</td><td>✅</td><td>✅ PPO Critic</td>
+        <td><span class="chip t">PPO/GRPO/DAPO</span></td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td><td>ORM + Rule + Model</td><td>Trajectory/Step</td><td>✅</td><td>✅</td>
+        <td><span class="chip t">PPO/GRPO/DAPO</span></td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td><td>ORM + Rule + Verifier</td><td>Trajectory</td><td>✅</td><td>✅ PPO</td>
+        <td><span class="chip t">PPO/GRPO/DAPO</span></td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td><td>ORM + Rule</td><td>Trajectory</td><td>✅</td><td>❌ 无 Critic</td>
+        <td><span class="chip d">GRPO + TIS/MIS</span></td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td><td>Model + Critique</td><td>Turn 级</td><td>部分</td><td>❌ 无 Critic</td>
+        <td><span class="chip t">CISPO</span></td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td><td>ORM + Rule</td><td>Trajectory</td><td>✅</td><td>✅ PPO</td>
+        <td><span class="chip r">PPO/GRPO + DGDS</span></td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td><td>Model-Based (Evaluator)</td><td>Trajectory</td><td>部分</td><td>❌ 无 Critic</td>
+        <td><span class="chip i">SAPO</span></td>
+      </tr>
+    </table>
+
+    <h2 class="section-title">RL 算法族谱</h2>
+    <div class="info-grid">
+      <div class="info-card training">
+        <h3>PPO 族 (需要 Critic)</h3>
+        <ul>
+          <li>PPO-Clip: verl, ROLL, SLIME, Seer</li>
+          <li>PPO-KL: verl</li>
+          <li>Turn-PPO (Turn级): 前沿研究</li>
+        </ul>
+      </div>
+      <div class="info-card rollout">
+        <h3>GRPO 族 (无 Critic)</h3>
+        <ul>
+          <li>GRPO: verl, ROLL, SLIME, MILES, Seer</li>
+          <li>DAPO (解耦Clip): verl, ROLL, SLIME</li>
+          <li>GRPO+TIS/MIS: MILES</li>
+          <li>GSPO: verl, SLIME</li>
+        </ul>
+      </div>
+      <div class="info-card data">
+        <h3>自研变体</h3>
+        <ul>
+          <li>CISPO (裁剪IS权重): Forge</li>
+          <li>SAPO (Swarm采样): rl-swarm</li>
+        </ul>
+      </div>
+      <div class="info-card io">
+        <h3>DPO 族 (无 RL 循环)</h3>
+        <ul>
+          <li>DPO/SimPO/KTO: verl 辅助</li>
+          <li>局限: 不适合多步推理和工具使用</li>
+        </ul>
+      </div>
+    </div>
+
+    <p style="font-size:0.8rem;color:var(--text-muted);margin-top:1rem;padding:0.8rem;background:var(--surface);border-radius:8px;border:1px solid var(--border)">
+      <b>趋势</b>: GRPO 通过消除 Critic 模型减少约 50% 资源开销。DAPO 进一步解决长 CoT 场景的熵坍塌。
+      奖励建模从人类标注 → RLVR (可验证奖励) 演进。模块化堆栈: SFT → DPO 对齐 → GRPO/DAPO 推理。
+    </p>
+  </div>
+
+  <!-- Innovation -->
+  <div class="cmp-section" id="tab-innovation">
+
+    <!-- Agentic Dimensions (from survey) -->
+    <h2 class="section-title" style="margin-top:0">RL 粒度与 MDP 建模 <span style="font-size:0.7rem;color:var(--text-muted)">(参考 arXiv 2509.02547)</span></h2>
+    <table class="cmp-table">
+      <tr>
+        <th>系统</th><th>MDP 类型</th><th>RL 粒度</th><th>多轮交互</th><th>环境交互</th><th>Critic 模型</th>
+      </tr>
+      <tr>
+        <td><b>verl</b></td><td>单步→POMDP</td><td>Token/Trajectory</td><td>AgentLoop (v0.7)</td><td>vLLM/SGLang Server</td><td>✅ PPO</td>
+      </tr>
+      <tr>
+        <td><b>ROLL</b></td><td>单步→POMDP</td><td>灵活切换</td><td>4 种异步模式</td><td>环境级异步</td><td>✅</td>
+      </tr>
+      <tr>
+        <td><b>SLIME</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>有限</td><td>HTTP API</td><td>✅ PPO</td>
+      </tr>
+      <tr>
+        <td><b>MILES</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>MrlX 多智能体</td><td>HTTP API</td><td>❌ GRPO</td>
+      </tr>
+      <tr>
+        <td><b>Forge</b></td><td><span class="chip t">POMDP 原生</span></td><td><span class="chip t">Turn 级</span></td><td><span class="chip t">原生多轮</span></td><td>Gateway + 环境</td><td>❌ CISPO</td>
+      </tr>
+      <tr>
+        <td><b>Seer</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>—</td><td>内部 RPC</td><td>✅ PPO</td>
+      </tr>
+      <tr>
+        <td><b>rl-swarm</b></td><td>POMDP</td><td>Trajectory</td><td>多轮代码</td><td>本地沙箱</td><td>❌ SAPO</td>
+      </tr>
+    </table>
+
+    <h2 class="section-title">核心创新点对比</h2>
+    <div class="info-grid">
+      <div class="info-card rollout">
+        <h3>verl - HybridFlow</h3>
+        <ul>
+          <li>单控制器+SPMD 混合编程模型</li>
+          <li>3D-HybridEngine 权重重分片</li>
+          <li>TransferQueue 控制流/数据流解耦</li>
+          <li>最大社区和最广泛的后端支持</li>
+        </ul>
+      </div>
+      <div class="info-card training">
+        <h3>ROLL - ROLLMUX/ROLLART</h3>
+        <ul>
+          <li>ROLLMUX 阶段级 GPU 复用 (1.84x)</li>
+          <li>ROLLART 无状态组件 Serverless 化</li>
+          <li>AutoDeviceMapping 灵活部署</li>
+          <li>共置/解耦/Serverless 三模式</li>
+        </ul>
+      </div>
+      <div class="info-card rollout">
+        <h3>SLIME - APRIL</h3>
+        <ul>
+          <li>主动部分 Rollout 长尾管理</li>
+          <li>SGLang 原生集成</li>
+          <li>SlimeRouter 负载均衡</li>
+          <li>唯一验证 355B MoE RL 训练</li>
+        </ul>
+      </div>
+      <div class="info-card data">
+        <h3>MILES - R3/FP8</h3>
+        <ul>
+          <li>R3 路由回放解决 MoE 不一致</li>
+          <li>首个端到端 FP8 框架</li>
+          <li>在线 SFT 投机解码 (25%+)</li>
+          <li>INT4 QAT: 1TB 单机推理</li>
+        </ul>
+      </div>
+      <div class="info-card training">
+        <h3>Forge - CISPO/Prefix Tree</h3>
+        <ul>
+          <li>CISPO: 全 Token 梯度 (2x DAPO)</li>
+          <li>Prefix Tree Merging (~40x 加速)</li>
+          <li>三层中间件完全解耦</li>
+          <li>数百种 Agent 脚手架统一</li>
+        </ul>
+      </div>
+      <div class="info-card rollout">
+        <h3>Seer - Divided Rollout</h3>
+        <ul>
+          <li>分段 Rollout 消除长 CoT 气泡</li>
+          <li>DGDS 动态 GPU 分配</li>
+          <li>Rollout/Training 交叉执行</li>
+          <li>严格同步 On-Policy 保证</li>
+        </ul>
+      </div>
+      <div class="info-card io">
+        <h3>rl-swarm - P2P 去中心化</h3>
+        <ul>
+          <li>SAPO 去中心化 GRPO</li>
+          <li>消费级 GPU 人人可参与</li>
+          <li>Hivemind P2P 梯度聚合</li>
+          <li>无数据中心依赖</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Architecture Spectrum -->
+  <h2 class="section-title">架构模式光谱</h2>
+  <svg class="svg-canvas" viewBox="0 0 1100 200">
+    <rect width="1100" height="200" fill="#0f1117"/>
+
+    <!-- Spectrum line -->
+    <line x1="80" y1="100" x2="1020" y2="100" stroke="var(--border)" stroke-width="2"/>
+    <text x="80" y="85" class="comp-sublabel" fill="var(--training)">集中式</text>
+    <text x="1000" y="85" class="comp-sublabel" fill="var(--io)">去中心化</text>
+
+    <!-- System dots -->
+    <circle cx="150" cy="100" r="20" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
+    <text x="150" y="105" style="font-size:9px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">verl</text>
+    <text x="150" y="140" class="comp-sublabel">单控制器</text>
+    <text x="150" y="155" class="comp-sublabel">共置</text>
+
+    <circle cx="280" cy="100" r="20" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
+    <text x="280" y="105" style="font-size:9px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">Seer</text>
+    <text x="280" y="140" class="comp-sublabel">集中式</text>
+    <text x="280" y="155" class="comp-sublabel">动态切换</text>
+
+    <circle cx="430" cy="100" r="20" fill="var(--data-bg)" stroke="var(--data)" stroke-width="1.5"/>
+    <text x="430" y="105" style="font-size:9px;font-weight:600" fill="var(--data)" text-anchor="middle" dominant-baseline="central">ROLL</text>
+    <text x="430" y="140" class="comp-sublabel">灵活模式</text>
+    <text x="430" y="155" class="comp-sublabel">3种部署</text>
+
+    <circle cx="560" cy="100" r="20" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="1.5"/>
+    <text x="560" y="105" style="font-size:9px;font-weight:600" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">SLIME</text>
+    <text x="560" y="140" class="comp-sublabel">编排层</text>
+    <text x="560" y="155" class="comp-sublabel">解耦</text>
+
+    <circle cx="680" cy="100" r="20" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="1.5"/>
+    <text x="680" y="105" style="font-size:8px;font-weight:600" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">MILES</text>
+    <text x="680" y="140" class="comp-sublabel">编排层</text>
+    <text x="680" y="155" class="comp-sublabel">模块化</text>
+
+    <circle cx="800" cy="100" r="20" fill="var(--data-bg)" stroke="var(--data)" stroke-width="1.5"/>
+    <text x="800" y="105" style="font-size:8px;font-weight:600" fill="var(--data)" text-anchor="middle" dominant-baseline="central">Forge</text>
+    <text x="800" y="140" class="comp-sublabel">中间件</text>
+    <text x="800" y="155" class="comp-sublabel">完全解耦</text>
+
+    <circle cx="960" cy="100" r="20" fill="var(--io-bg)" stroke="var(--io)" stroke-width="1.5"/>
+    <text x="960" y="105" style="font-size:8px;font-weight:600" fill="var(--io)" text-anchor="middle" dominant-baseline="central">swarm</text>
+    <text x="960" y="140" class="comp-sublabel">P2P</text>
+    <text x="960" y="155" class="comp-sublabel">去中心化</text>
+  </svg>
+</div>
+
+<script src="shared.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('svg').forEach(svg => injectArrowMarkers(svg));
+  buildLegend(document.getElementById('legend'));
+
+  // Tab switching
+  document.querySelectorAll('.section-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.section-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.cmp-section').forEach(s => s.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+  });
+});
+</script>
+</body>
+</html>

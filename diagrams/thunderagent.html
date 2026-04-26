@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThunderAgent - 架构与训练流程</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<div class="page-header">
+  <h1>ThunderAgent</h1>
+  <p class="subtitle">Together AI &middot; Program-Aware Agentic 推理系统 &middot; KV-Cache Thrashing 消除</p>
+</div>
+
+<div class="diagram-container">
+  <div id="legend"></div>
+
+  <h2 class="section-title">Program-Aware 调度架构</h2>
+
+  <svg id="arch-svg" class="svg-canvas" viewBox="0 0 1100 650">
+    <defs>
+      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+        <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1e2233" stroke-width="0.5"/>
+      </pattern>
+    </defs>
+    <rect width="1100" height="650" fill="url(#grid)"/>
+
+    <!-- Problem statement -->
+    <rect x="150" y="15" width="800" height="35" rx="6" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="1"/>
+    <text x="550" y="37" class="comp-sublabel" fill="var(--data)">解决 Agentic 推理中的 KV-Cache Thrashing: 多轮推理-执行交替导致 KV 缓存反复驱逐与重计算</text>
+
+    <!-- Layer 1: Agent Clients -->
+    <g id="box-clients">
+      <rect id="comp-clients" class="comp-box rollout" x="60" y="65" width="980" height="120"/>
+      <text x="120" y="90" class="comp-label" fill="var(--rollout)">Agent Clients (Agentic Workflows)</text>
+
+      <rect x="80" y="100" width="220" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="190" y="122" class="comp-sublabel" fill="var(--rollout)">Coding Agent</text>
+      <text x="190" y="140" class="comp-sublabel">SWE-bench 代码生成</text>
+      <text x="190" y="155" class="comp-sublabel">多轮推理 + 工具调用</text>
+
+      <rect x="320" y="100" width="220" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="430" y="122" class="comp-sublabel" fill="var(--rollout)">Search Agent</text>
+      <text x="430" y="140" class="comp-sublabel">网络搜索 + 信息提取</text>
+      <text x="430" y="155" class="comp-sublabel">长上下文多步检索</text>
+
+      <rect x="560" y="100" width="220" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="670" y="122" class="comp-sublabel" fill="var(--rollout)">Scientific Agent</text>
+      <text x="670" y="140" class="comp-sublabel">科学推理 + 实验设计</text>
+      <text x="670" y="155" class="comp-sublabel">复杂多步计划</text>
+
+      <rect x="800" y="100" width="220" height="70" rx="6" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="910" y="122" class="comp-sublabel" fill="var(--rollout)">Custom Agent</text>
+      <text x="910" y="140" class="comp-sublabel">用户自定义工作流</text>
+      <text x="910" y="155" class="comp-sublabel">Program 抽象接口</text>
+    </g>
+
+    <!-- Layer 2: ThunderAgent Scheduler -->
+    <g id="box-scheduler">
+      <rect id="comp-scheduler" class="comp-box data" x="60" y="205" width="980" height="170"/>
+      <text x="120" y="230" class="comp-label" fill="var(--data)">ThunderAgent Scheduler (Program-Aware 调度器)</text>
+
+      <rect x="80" y="245" width="300" height="115" rx="8" fill="rgba(251,146,60,.08)" stroke="var(--data)" stroke-width="0.8"/>
+      <text x="230" y="268" class="comp-sublabel" fill="var(--data)">Program 抽象层</text>
+      <text x="230" y="288" class="comp-sublabel">Agent 工作流 = Program</text>
+      <text x="230" y="305" class="comp-sublabel">推理步骤 = Program Step</text>
+      <text x="230" y="322" class="comp-sublabel">调度器感知 Program 结构</text>
+      <text x="230" y="339" class="comp-sublabel" fill="var(--data)">预测下一步推理时间</text>
+
+      <rect x="400" y="245" width="300" height="115" rx="8" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.8"/>
+      <text x="550" y="268" class="comp-sublabel" fill="var(--io)">KV Cache Manager</text>
+      <text x="550" y="288" class="comp-sublabel">Program-Aware 缓存策略</text>
+      <text x="550" y="305" class="comp-sublabel">工具执行期间保持 KV Cache</text>
+      <text x="550" y="322" class="comp-sublabel">优先级驱逐: 活跃 Program 优先</text>
+      <text x="550" y="339" class="comp-sublabel" fill="var(--io)">消除 KV-Cache Thrashing</text>
+
+      <rect x="720" y="245" width="300" height="115" rx="8" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="870" y="268" class="comp-sublabel" fill="var(--training)">Tool Resource Manager</text>
+      <text x="870" y="288" class="comp-sublabel">Docker 容器管理</text>
+      <text x="870" y="305" class="comp-sublabel">工具执行隔离与调度</text>
+      <text x="870" y="322" class="comp-sublabel">并行工具执行</text>
+      <text x="870" y="339" class="comp-sublabel" fill="var(--training)">GPU/CPU 资源协调</text>
+    </g>
+
+    <!-- Layer 3: Infrastructure -->
+    <g id="box-infra">
+      <rect id="comp-infra" class="comp-box training" x="60" y="395" width="980" height="120"/>
+      <text x="120" y="420" class="comp-label" fill="var(--training)">Infrastructure (推理与工具基础设施)</text>
+
+      <rect x="80" y="435" width="310" height="65" rx="8" fill="rgba(74,158,255,.08)" stroke="var(--rollout)" stroke-width="0.8"/>
+      <text x="235" y="455" class="comp-sublabel" fill="var(--rollout)">vLLM / SGLang GPU 节点</text>
+      <text x="235" y="472" class="comp-sublabel">大规模 LLM 推理引擎</text>
+      <text x="235" y="487" class="comp-sublabel">Paged Attention · 高吞吐</text>
+
+      <rect x="410" y="435" width="280" height="65" rx="8" fill="rgba(167,139,250,.08)" stroke="var(--io)" stroke-width="0.8"/>
+      <text x="550" y="455" class="comp-sublabel" fill="var(--io)">KV Cache 存储层</text>
+      <text x="550" y="472" class="comp-sublabel">GPU / CPU / Disk 多级缓存</text>
+      <text x="550" y="487" class="comp-sublabel">Program 生命周期绑定</text>
+
+      <rect x="710" y="435" width="310" height="65" rx="8" fill="rgba(52,211,153,.08)" stroke="var(--training)" stroke-width="0.8"/>
+      <text x="865" y="455" class="comp-sublabel" fill="var(--training)">Docker 容器 (工具执行)</text>
+      <text x="865" y="472" class="comp-sublabel">代码执行 · API 调用 · 搜索</text>
+      <text x="865" y="487" class="comp-sublabel">沙箱隔离 · 弹性扩展</text>
+    </g>
+
+    <!-- Arrows between layers -->
+    <path class="flow-arrow data" d="M 550 185 L 550 205" marker-end="url(#arrowhead-data)"/>
+    <path class="flow-arrow training" d="M 550 375 L 550 395" marker-end="url(#arrowhead-training)"/>
+
+    <!-- KV Thrashing explanation -->
+    <rect x="60" y="530" width="480" height="105" rx="10" fill="rgba(167,139,250,.06)" stroke="var(--io)" stroke-width="1"/>
+    <text x="300" y="555" class="comp-label" fill="var(--io)">KV-Cache Thrashing 问题</text>
+    <text x="300" y="575" class="comp-sublabel">传统调度: 工具执行期间 KV Cache 被其他请求驱逐</text>
+    <text x="300" y="593" class="comp-sublabel" fill="var(--io)">恢复推理时需要完整重新 Prefill (重计算)</text>
+    <text x="300" y="611" class="comp-sublabel" fill="var(--io)">多轮交互中反复 Thrashing 导致延迟指数增长</text>
+    <text x="300" y="629" class="comp-sublabel">ThunderAgent: Program-Aware 调度消除 Thrashing</text>
+
+    <!-- Program Abstraction -->
+    <rect x="560" y="530" width="480" height="105" rx="10" fill="rgba(74,158,255,.06)" stroke="var(--rollout)" stroke-width="1"/>
+    <text x="800" y="555" class="comp-label" fill="var(--rollout)">Program 抽象模型</text>
+    <text x="800" y="575" class="comp-sublabel">Agent 工作流建模为有状态的 Program</text>
+    <text x="800" y="593" class="comp-sublabel" fill="var(--rollout)">调度器追踪 Program 生命周期与状态</text>
+    <text x="800" y="611" class="comp-sublabel" fill="var(--rollout)">推理阶段与执行阶段的显式切换</text>
+    <text x="800" y="629" class="comp-sublabel">KV Cache 与 Program 绑定, 非请求级别</text>
+  </svg>
+
+  <h2 class="section-title">训练流程动画</h2>
+
+  <svg id="flow-svg" class="svg-canvas" viewBox="0 0 1100 380">
+    <rect width="1100" height="380" fill="#0f1117"/>
+
+    <rect id="flow-submit" class="comp-box rollout" x="20" y="120" width="140" height="120"/>
+    <text x="90" y="155" class="comp-label">Agent Submit</text>
+    <text x="90" y="175" class="comp-sublabel">工作流提交</text>
+    <text x="90" y="200" class="comp-sublabel" fill="var(--rollout)">&#x25cf; 多个 Program</text>
+    <text x="90" y="218" class="comp-sublabel" fill="var(--rollout)">&#x25cf; 并行调度</text>
+
+    <rect id="flow-reason" class="comp-box rollout" x="200" y="140" width="130" height="80"/>
+    <text x="265" y="170" class="comp-label">LLM 推理</text>
+    <text x="265" y="188" class="comp-sublabel">GPU 推理阶段</text>
+
+    <rect id="flow-tool" class="comp-box training" x="370" y="140" width="130" height="80"/>
+    <text x="435" y="170" class="comp-label">工具执行</text>
+    <text x="435" y="188" class="comp-sublabel">KV Cache 保持</text>
+
+    <rect id="flow-resume" class="comp-box io" x="540" y="140" width="130" height="80"/>
+    <text x="605" y="170" class="comp-label">恢复推理</text>
+    <text x="605" y="188" class="comp-sublabel">无需重计算</text>
+
+    <rect id="flow-rollout" class="comp-box data" x="710" y="120" width="150" height="120"/>
+    <text x="785" y="155" class="comp-label">Rollout 收集</text>
+    <text x="785" y="175" class="comp-sublabel">轨迹数据收集</text>
+    <text x="785" y="200" class="comp-sublabel" fill="var(--data)">&#x25cf; 完整交互链</text>
+    <text x="785" y="218" class="comp-sublabel" fill="var(--data)">&#x25cf; 奖励标注</text>
+
+    <rect id="flow-train" class="comp-box training" x="900" y="120" width="170" height="120"/>
+    <text x="985" y="155" class="comp-label">RL Training</text>
+    <text x="985" y="175" class="comp-sublabel">策略优化训练</text>
+    <text x="985" y="200" class="comp-sublabel" fill="var(--training)">&#x25cf; 梯度更新</text>
+    <text x="985" y="218" class="comp-sublabel" fill="var(--training)">&#x25cf; 权重同步</text>
+
+    <!-- Forward arrows -->
+    <path id="fp1" class="flow-arrow rollout" d="M 160 180 L 200 180" marker-end="url(#arrowhead-rollout)"/>
+    <path id="fp2" class="flow-arrow rollout" d="M 330 180 L 370 180" marker-end="url(#arrowhead-rollout)"/>
+    <path id="fp3" class="flow-arrow io" d="M 500 180 L 540 180" marker-end="url(#arrowhead-io)"/>
+    <path id="fp4" class="flow-arrow data" d="M 670 180 L 710 180" marker-end="url(#arrowhead-data)"/>
+    <path id="fp5" class="flow-arrow training" d="M 860 180 L 900 180" marker-end="url(#arrowhead-training)"/>
+
+    <!-- Feedback loop -->
+    <path id="fp-back" class="flow-arrow io" d="M 985 240 Q 985 330 550 350 Q 90 330 90 240"
+          fill="none" marker-end="url(#arrowhead-io)" stroke-dasharray="6,3"/>
+    <text x="550" y="365" class="comp-sublabel" fill="var(--io)">权重同步 → 推理引擎 · KV Cache 更新策略</text>
+
+    <!-- Particle paths (invisible) -->
+    <path id="pp1" d="M 90 180 L 200 180" fill="none" stroke="none"/>
+    <path id="pp2" d="M 200 180 L 370 180" fill="none" stroke="none"/>
+    <path id="pp3" d="M 370 180 L 540 180" fill="none" stroke="none"/>
+    <path id="pp4" d="M 540 180 L 710 180" fill="none" stroke="none"/>
+    <path id="pp5" d="M 710 180 L 900 180" fill="none" stroke="none"/>
+    <path id="pp6" d="M 985 240 Q 985 330 550 350 Q 90 330 90 240" fill="none" stroke="none"/>
+  </svg>
+
+  <div id="controls"></div>
+
+  <div class="info-grid">
+    <div class="info-card rollout">
+      <h3>Rollout / Inference</h3>
+      <ul>
+        <li>Program-Aware 请求调度</li>
+        <li>KV Cache 与 Program 绑定</li>
+        <li>工具执行期间保持缓存</li>
+        <li>无重计算恢复推理</li>
+        <li>vLLM / SGLang 推理后端</li>
+      </ul>
+    </div>
+    <div class="info-card training">
+      <h3>Training / Optimization</h3>
+      <ul>
+        <li>RL Rollout 吞吐提升 1.8-3.9x</li>
+        <li>Agent 工作流端到端训练</li>
+        <li>多步工具调用奖励建模</li>
+        <li>策略梯度优化</li>
+        <li>高效 Rollout 数据收集</li>
+      </ul>
+    </div>
+    <div class="info-card data">
+      <h3>Data Processing</h3>
+      <ul>
+        <li>Program 抽象建模工作流</li>
+        <li>多轮交互轨迹收集</li>
+        <li>推理-执行状态追踪</li>
+        <li>完整交互链数据格式</li>
+        <li>奖励信号标注与处理</li>
+      </ul>
+    </div>
+    <div class="info-card io">
+      <h3>I/O & Communication</h3>
+      <ul>
+        <li>Program 生命周期管理</li>
+        <li>多级 KV Cache 存储</li>
+        <li>Docker 工具隔离执行</li>
+        <li>GPU/CPU 资源协调</li>
+        <li>消除 KV-Cache Thrashing</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2 class="section-title">关键性能数据</h2>
+  <div class="comparison-row">
+    <div class="comparison-cell">
+      <h4>RL Rollout 吞吐</h4>
+      <div style="font-size:1.4rem;color:var(--rollout);font-weight:700">1.8-3.9x</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">Rollout 吞吐量提升</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>推理吞吐</h4>
+      <div style="font-size:1.4rem;color:var(--training);font-weight:700">1.5-3.6x</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">Inference 吞吐量提升</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>KV Thrashing 延迟</h4>
+      <div style="font-size:1.4rem;color:var(--data);font-weight:700">7.1x</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">Latency 消除 (最大)</div>
+    </div>
+    <div class="comparison-cell">
+      <h4>内存节省</h4>
+      <div style="font-size:1.4rem;color:var(--io);font-weight:700">4.2x</div>
+      <div style="font-size:0.7rem;color:var(--text-muted)">Memory Savings (最大)</div>
+    </div>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('svg').forEach(svg => injectArrowMarkers(svg));
+  buildLegend(document.getElementById('legend'));
+
+  const flowSvg = document.getElementById('flow-svg');
+  const stages = [
+    { id: 'submit', label: 'Program 提交', category: 'rollout', duration: 2000,
+      components: ['flow-submit'], arrows: ['fp1'],
+      particles: [{ pathId: 'pp1', category: 'rollout', count: 4, stagger: 0.15 }] },
+    { id: 'reason', label: 'GPU 推理', category: 'rollout', duration: 2500,
+      components: ['flow-submit', 'flow-reason'], arrows: ['fp1', 'fp2'],
+      particles: [{ pathId: 'pp2', category: 'rollout', count: 5, stagger: 0.12 }] },
+    { id: 'tool', label: '工具执行', category: 'training', duration: 2000,
+      components: ['flow-reason', 'flow-tool'], arrows: ['fp2', 'fp3'],
+      particles: [{ pathId: 'pp3', category: 'training', count: 4, stagger: 0.15 }] },
+    { id: 'resume', label: '恢复推理', category: 'io', duration: 1500,
+      components: ['flow-tool', 'flow-resume'], arrows: ['fp3', 'fp4'],
+      particles: [{ pathId: 'pp4', category: 'io', count: 3, stagger: 0.2 }] },
+    { id: 'rollout', label: 'Rollout 收集', category: 'data', duration: 1500,
+      components: ['flow-resume', 'flow-rollout'], arrows: ['fp4', 'fp5'],
+      particles: [{ pathId: 'pp5', category: 'data', count: 4, stagger: 0.15 }] },
+    { id: 'train', label: 'RL 训练', category: 'training', duration: 2500,
+      components: ['flow-rollout', 'flow-train'], arrows: ['fp5'],
+      particles: [{ pathId: 'pp5', category: 'training', count: 4, stagger: 0.15 }] },
+    { id: 'sync', label: '权重同步', category: 'io', duration: 1800,
+      components: ['flow-train', 'flow-submit'], arrows: ['fp-back'],
+      particles: [{ pathId: 'pp6', category: 'io', count: 5, stagger: 0.1 }] },
+  ];
+
+  const animator = new TrainingFlowAnimator(flowSvg, stages, { loop: true });
+  animator.mount(document.getElementById('controls'));
+});
+</script>
+</body>
+</html>

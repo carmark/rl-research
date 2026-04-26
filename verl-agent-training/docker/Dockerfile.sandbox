@@ -1,0 +1,35 @@
+# =============================================================================
+# Sandbox Docker Image for Tool Execution
+# =============================================================================
+# Minimal Python environment for safe code execution during RL training.
+# Isolated: no network, read-only filesystem, resource limits enforced by host.
+#
+# Build:
+#   docker build -t verl-sandbox:latest -f docker/Dockerfile.sandbox .
+#
+# Run (test):
+#   docker run --rm --network=none --read-only --tmpfs=/tmp:size=64m \
+#     verl-sandbox:latest python3 -c "print('Hello from sandbox')"
+# =============================================================================
+
+FROM python:3.11-slim
+
+# Prevent Python from buffering stdout/stderr
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Install commonly needed scientific packages
+RUN pip install --no-cache-dir \
+    numpy \
+    scipy \
+    sympy \
+    pandas \
+    && rm -rf /root/.cache/pip
+
+# Create non-root user for execution
+RUN useradd --create-home --no-log-init --shell /bin/bash sandbox
+USER sandbox
+WORKDIR /home/sandbox
+
+# Default command: run a Python script mounted at /code/script.py
+CMD ["python3", "/code/script.py"]

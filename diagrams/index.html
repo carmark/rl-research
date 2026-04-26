@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agentic RL 训练系统对比 - 导航</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Agentic RL 训练系统基础设施调研</h1>
+  <p class="subtitle">8 个系统的架构图与训练流程动画 · 点击进入各系统详情</p>
+</div>
+
+<div class="nav-grid">
+  <a href="verl.html" class="nav-card">
+    <h2 style="color:var(--rollout)">verl / HybridFlow</h2>
+    <p>字节跳动 · 灵活高效的 RL Post-Training 框架</p>
+    <p>单控制器 + SPMD 混合编程 · 3D-HybridEngine · TransferQueue</p>
+    <span class="tag">v0.7.1 · 2026.01</span>
+    <span class="tag" style="color:var(--training)">671B MoE</span>
+  </a>
+
+  <a href="roll.html" class="nav-card">
+    <h2 style="color:var(--training)">ROLL</h2>
+    <p>阿里巴巴 · 高效可扩展的 RL Post-Training 库</p>
+    <p>单控制器 · ROLLMUX 阶段复用 · ROLLART Serverless</p>
+    <span class="tag">AutoDeviceMapping</span>
+    <span class="tag" style="color:var(--rollout)">1.84x 成本效率</span>
+  </a>
+
+  <a href="slime.html" class="nav-card">
+    <h2 style="color:var(--rollout)">SLIME</h2>
+    <p>清华 THUDM · RL Scaling 后训练框架</p>
+    <p>SGLang + Megatron 解耦 · APRIL · SlimeRouter</p>
+    <span class="tag">v0.2.3</span>
+    <span class="tag" style="color:var(--training)">355B MoE · GLM-4.5</span>
+  </a>
+
+  <a href="miles.html" class="nav-card">
+    <h2 style="color:var(--data)">MILES</h2>
+    <p>RadixArk · 端到端 FP8 + R3 路由回放</p>
+    <p>MoE 训练-推理一致性 · 投机解码 · MrlX 多智能体</p>
+    <span class="tag">FP8 E2E</span>
+    <span class="tag" style="color:var(--rollout)">25%+ 加速</span>
+  </a>
+
+  <a href="forge.html" class="nav-card">
+    <h2 style="color:var(--training)">MiniMax Forge</h2>
+    <p>MiniMax · 中间件三层架构</p>
+    <p>CISPO 算法 · Prefix Tree Merging · Magi Attention</p>
+    <span class="tag">230B MoE · M2.5</span>
+    <span class="tag" style="color:var(--training)">~40x 训练加速</span>
+  </a>
+
+  <a href="seer.html" class="nav-card">
+    <h2 style="color:var(--rollout)">Seer (月之暗面)</h2>
+    <p>Moonshot AI · 长 CoT 推理优化</p>
+    <p>Divided Rollout · DGDS 动态 GPU 分配 · 同步 On-Policy</p>
+    <span class="tag">Kimi 推理模型</span>
+    <span class="tag" style="color:var(--rollout)">消除 Rollout 气泡</span>
+  </a>
+
+  <a href="rl-swarm.html" class="nav-card">
+    <h2 style="color:var(--io)">rl-swarm (Gensyn)</h2>
+    <p>去中心化 P2P 网络 · 消费级 GPU</p>
+    <p>SAPO 算法 · Hivemind 梯度聚合 · 人人可参与</p>
+    <span class="tag">libp2p / P2P</span>
+    <span class="tag" style="color:var(--io)">无数据中心</span>
+  </a>
+
+  <a href="thunderagent.html" class="nav-card">
+    <h2 style="color:var(--data)">ThunderAgent</h2>
+    <p>Together AI · Program-Aware Agentic 推理系统</p>
+    <p>Program 抽象 · KV-Cache Thrashing 消除 · 异步环境准备</p>
+    <span class="tag">arXiv 2602.13692</span>
+    <span class="tag" style="color:var(--rollout)">1.8-3.9x Rollout</span>
+  </a>
+
+  <a href="comparison.html" class="nav-card" style="border-color:var(--accent)">
+    <h2 style="color:var(--accent)">8 系统横向对比</h2>
+    <p>Rollout · Training · Data Processing · I/O 全维度对比</p>
+    <p>架构模式分类 · 创新点 · 性能数据</p>
+    <span class="tag" style="color:var(--accent)">综合对比分析</span>
+  </a>
+</div>
+
+<div style="text-align:center; padding:2rem; color:var(--text-muted); font-size:0.8rem;">
+  <p>Agentic RL 训练系统基础设施调研 · 2026.04</p>
+  <p style="margin-top:0.5rem;">
+    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--rollout);margin-right:4px"></span>Rollout
+    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--training);margin:0 4px 0 12px"></span>Training
+    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--data);margin:0 4px 0 12px"></span>Data
+    <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--io);margin:0 4px 0 12px"></span>I/O
+  </p>
+</div>
+
+</body>
+</html>
