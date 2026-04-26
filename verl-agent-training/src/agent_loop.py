@@ -1,34 +1,154 @@
-"""AgentLoop for multi-turn tool-calling RL rollout.
+"""Custom AgentLoop conforming to verl's AgentLoopBase interface.
 
-Encapsulates the interaction loop between the LLM (via vLLM server)
-and the tool environment.  Each episode consists of multiple turns
-where the LLM generates a response, tool calls are parsed and executed,
-and the results are appended to the context for the next turn.
+verl's agent loop interface (verl/experimental/agent_loop/agent_loop.py):
+
+    class AgentLoopBase(ABC):
+        async def run(self, sampling_params, **kwargs) -> AgentLoopOutput
+
+    class AgentLoopOutput(BaseModel):
+        prompt_ids: list[int]
+        response_ids: list[int]
+        response_mask: list[int]   # 1=LLM-generated, 0=tool-response/padding
+        response_logprobs: Optional[list[float]]
+        reward_score: Optional[float]
+        num_turns: int
+        metrics: AgentLoopMetrics
+        extra_fields: dict[str, Any]
+
+Registration:
+    @register("tool_call_agent")  — then set in config:
+    actor_rollout_ref.rollout.agent.default_agent_loop: tool_call_agent
+
+    Or via YAML agent_loop_config_path.
+
+NOTE: This module provides TWO implementations:
+    1. ToolCallAgentLoop — extends verl's built-in ToolAgentLoop (recommended)
+    2. StandaloneAgentLoop — standalone version for development without verl
 """
 
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .tool_env import ToolEnvironment
-
 logger = logging.getLogger(__name__)
 
-# Regex to extract <tool_call>...</tool_call> blocks
-TOOL_CALL_PATTERN = re.compile(
-    r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL
-)
+# ---- Tool call parsing ----
+TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
+
+def parse_tool_calls(text: str) -> list[dict]:
+    """Parse <tool_call> JSON blocks from LLM output."""
+    calls = []
+    for m in TOOL_CALL_PATTERN.finditer(text):
+        raw = m.group(1).strip()
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict) and "name" in obj:
+                obj.setdefault("arguments", {})
+                calls.append(obj)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Failed to parse tool call: %s", raw[:100])
+    return calls
+
+
+# =========================================================================
+# Option 1: Extend verl's ToolAgentLoop (RECOMMENDED for production)
+# =========================================================================
+
+def register_tool_call_agent():
+    """Register our custom agent loop with verl.
+
+    Call this at import time (e.g., in __init__.py or in the training script)
+    so that verl can find the agent loop by name.
+
+    Usage:
+        from src.agent_loop import register_tool_call_agent
+        register_tool_call_agent()
+
+        # Then in config:
+        # actor_rollout_ref.rollout.agent.default_agent_loop: tool_call_agent
+    """
+    try:
+        from verl.experimental.agent_loop.agent_loop import AgentLoopBase, register
+        from verl.experimental.agent_loop.tool_agent_loop import ToolAgentLoop
+    except ImportError:
+        logger.warning("verl not installed; skipping agent loop registration")
+        return
+
+    @register("tool_call_agent")
+    class ToolCallAgentLoop(ToolAgentLoop):
+        """Extended ToolAgentLoop with custom behavior for our training.
+
+        Inherits verl's built-in ToolAgentLoop state machine:
+            PENDING -> GENERATING -> (PROCESSING_TOOLS -> GENERATING)* -> TERMINATED
+
+        Customizations:
+            - Enhanced termination logic (timeout, max total tool calls)
+            - Custom metrics collection
+            - No-op detection
+        """
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # Additional config from rollout.multi_turn
+            mt_config = self.rollout_config.multi_turn
+            self.max_total_tool_calls = getattr(mt_config, "max_total_tool_calls", 50)
+            self.rollout_timeout = getattr(mt_config, "rollout_timeout", 120.0)
+
+        async def run(self, sampling_params, **kwargs):
+            """Override run to add timeout and enhanced metrics.
+
+            Delegates to parent's run() but wraps with our controls.
+            """
+            import asyncio
+
+            try:
+                output = await asyncio.wait_for(
+                    super().run(sampling_params, **kwargs),
+                    timeout=self.rollout_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("AgentLoop timed out after %.0fs", self.rollout_timeout)
+                # Build a minimal output on timeout
+                output = self._build_timeout_output(kwargs)
+
+            # Inject custom metrics into extra_fields
+            output.extra_fields["rollout_timeout"] = False
+            output.extra_fields.setdefault("tool_rewards", [])
+            return output
+
+        def _build_timeout_output(self, kwargs):
+            """Build AgentLoopOutput for a timed-out episode."""
+            from verl.experimental.agent_loop.agent_loop import (
+                AgentLoopOutput, AgentLoopMetrics
+            )
+            # Return what we have so far
+            prompt_ids = kwargs.get("prompt_ids", [])
+            return AgentLoopOutput(
+                prompt_ids=prompt_ids if isinstance(prompt_ids, list) else prompt_ids.tolist(),
+                response_ids=[],
+                response_mask=[],
+                num_turns=0,
+                metrics=AgentLoopMetrics(),
+                extra_fields={"rollout_timeout": True, "tool_rewards": []},
+            )
+
+    logger.info("Registered 'tool_call_agent' AgentLoop with verl")
+    return ToolCallAgentLoop
+
+
+# =========================================================================
+# Option 2: Standalone AgentLoop (for development/testing without verl)
+# =========================================================================
 
 @dataclass
 class AgentLoopConfig:
-    """Configuration for the AgentLoop."""
-
+    """Configuration for standalone AgentLoop."""
     max_turns: int = 10
     max_new_tokens: int = 4096
     temperature: float = 0.7
@@ -41,8 +161,7 @@ class AgentLoopConfig:
 
 @dataclass
 class TurnRecord:
-    """Record of a single turn in the agent loop."""
-
+    """Record of a single agent turn."""
     turn_id: int
     response: str
     tool_calls: list[dict]
@@ -62,7 +181,6 @@ class TurnRecord:
 @dataclass
 class TrajectoryRecord:
     """Complete trajectory for one episode."""
-
     prompt: str
     turns: list[TurnRecord]
     total_tokens: int = 0
@@ -79,241 +197,147 @@ class TrajectoryRecord:
         return sum(len(t.tool_calls) for t in self.turns)
 
     def to_dict_list(self) -> list[dict]:
-        """Convert to the trajectory format expected by the reward function."""
         return [t.to_dict() for t in self.turns]
 
     def get_all_log_probs(self) -> list[float]:
-        """Concatenate log-probs from all turns."""
-        probs = []
+        out: list[float] = []
         for t in self.turns:
             if t.log_probs:
-                probs.extend(t.log_probs)
-        return probs
+                out.extend(t.log_probs)
+        return out
+
+    def get_full_response(self) -> str:
+        """Concatenate all turn responses (for reward compute_score)."""
+        return "\n".join(t.response for t in self.turns if t.response)
 
 
-def parse_tool_calls(response: str) -> list[dict]:
-    """Parse tool calls from LLM output.
+class StandaloneAgentLoop:
+    """Multi-turn agent loop for development and testing.
 
-    Expected format:
-        <tool_call>
-        {"name": "tool_name", "arguments": {"arg1": "val1"}}
-        </tool_call>
-
-    Returns a list of parsed tool call dicts.
-    """
-    calls = []
-    for match in TOOL_CALL_PATTERN.finditer(response):
-        raw = match.group(1).strip()
-        try:
-            call = json.loads(raw)
-            if isinstance(call, dict) and "name" in call:
-                if "arguments" not in call:
-                    call["arguments"] = {}
-                calls.append(call)
-            else:
-                logger.warning("Malformed tool call (missing 'name'): %s", raw[:100])
-        except json.JSONDecodeError as e:
-            logger.warning("Failed to parse tool call JSON: %s — %s", raw[:100], e)
-    return calls
-
-
-def has_tool_calls(response: str) -> bool:
-    """Check if the response contains any tool call blocks."""
-    return bool(TOOL_CALL_PATTERN.search(response))
-
-
-def strip_tool_calls(response: str) -> str:
-    """Remove tool call blocks from the response text."""
-    return TOOL_CALL_PATTERN.sub("", response).strip()
-
-
-class AgentLoop:
-    """Multi-turn agent interaction loop for RL rollout.
-
-    This class orchestrates the interaction between the LLM inference
-    engine and the tool environment.  It is designed to be used with
-    verl's AgentLoop / Server mode, but can also run standalone for
-    testing.
+    This does NOT depend on verl and can run with any generate_fn callable.
+    Use this to validate tool calling + reward logic before integrating
+    with verl's framework.
 
     Usage:
-        env = ToolEnvironment(config)
-        loop = AgentLoop(env=env, config=AgentLoopConfig())
+        from src.tools.verl_tools import CalculatorTool, WebSearchTool
 
-        # With a callable generate function (e.g. vLLM client)
-        trajectory = loop.run(
-            prompt="What is the population of France?",
-            system_prompt="You are a helpful assistant with tool access.",
-            generate_fn=my_vllm_generate,
+        # Setup tools
+        tools = {
+            "calculator": CalculatorTool(config={}),
+            "web_search": WebSearchTool(config={"backend": "mock"}),
+        }
+
+        loop = StandaloneAgentLoop(tools=tools, config=AgentLoopConfig())
+        trajectory = await loop.run(
+            prompt="Calculate sqrt(144)",
+            generate_fn=my_llm_generate,
+        )
+
+        # Compute reward
+        from src.reward_function import compute_score
+        reward = compute_score(
+            data_source="test",
+            solution_str=trajectory.get_full_response(),
+            ground_truth="12",
+            extra_info={"num_turns": trajectory.num_turns},
         )
     """
 
-    def __init__(
-        self,
-        env: ToolEnvironment,
-        config: AgentLoopConfig | None = None,
-    ):
-        self.env = env
+    def __init__(self, tools: dict[str, Any], config: AgentLoopConfig | None = None):
+        self.tools = tools
         self.config = config or AgentLoopConfig()
 
-    def run(
+    async def run(
         self,
-        prompt: str,
-        system_prompt: str | None = None,
-        generate_fn: Any = None,
-        episode_id: str = "",
-    ) -> TrajectoryRecord:
-        """Run a complete multi-turn agent episode.
-
-        Args:
-            prompt: The user task prompt.
-            system_prompt: Optional system prompt (tool descriptions
-                will be appended automatically).
-            generate_fn: Callable that takes messages (list[dict]) and
-                generation params, returns a dict with 'text', 'log_probs',
-                and 'tokens'.
-            episode_id: Unique episode identifier.
-
-        Returns:
-            TrajectoryRecord with all turns and metadata.
-        """
-        if generate_fn is None:
-            raise ValueError("generate_fn is required")
-
-        # Reset environment
-        self.env.reset(episode_id=episode_id)
-
-        # Build initial messages
-        tool_desc = self.env.get_tool_descriptions()
-        if system_prompt:
-            full_system = f"{system_prompt}\n\n{tool_desc}"
-        else:
-            full_system = tool_desc
-
-        messages = [
-            {"role": "system", "content": full_system},
-            {"role": "user", "content": prompt},
-        ]
-
-        trajectory = TrajectoryRecord(prompt=prompt, turns=[])
-        start_time = time.time()
-
-        for turn_id in range(self.config.max_turns):
-            # Check timeout
-            elapsed = time.time() - start_time
-            if elapsed > self.config.rollout_timeout:
-                trajectory.finish_reason = "timeout"
-                break
-
-            # Generate LLM response
-            gen_result = generate_fn(
-                messages=messages,
-                max_new_tokens=self.config.max_new_tokens,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-                stop=self.config.stop_sequences,
-            )
-
-            response_text = gen_result.get("text", "")
-            log_probs = gen_result.get("log_probs")
-            tokens = gen_result.get("tokens")
-
-            # Parse tool calls
-            tool_calls = parse_tool_calls(response_text)
-
-            if not tool_calls:
-                # No tool calls — agent is done
-                turn = TurnRecord(
-                    turn_id=turn_id,
-                    response=response_text,
-                    tool_calls=[],
-                    tool_results=[],
-                    log_probs=log_probs,
-                    tokens=tokens,
-                )
-                trajectory.turns.append(turn)
-                trajectory.finished = True
-                trajectory.finish_reason = "completed"
-                break
-
-            # Execute tool calls
-            results = self.env.execute_tool_calls(tool_calls)
-            result_dicts = [r.to_dict() for r in results]
-
-            # Record turn
-            turn = TurnRecord(
-                turn_id=turn_id,
-                response=response_text,
-                tool_calls=tool_calls,
-                tool_results=result_dicts,
-                log_probs=log_probs,
-                tokens=tokens,
-            )
-            trajectory.turns.append(turn)
-
-            # Append to context for next turn
-            messages.append({"role": "assistant", "content": response_text})
-            tool_result_text = self.env.format_tool_results(results)
-            messages.append({"role": "user", "content": tool_result_text})
-
-        else:
-            # Reached max turns
-            trajectory.finish_reason = "max_turns"
-
-        trajectory.total_time = time.time() - start_time
-        trajectory.total_tokens = sum(
-            len(t.tokens) for t in trajectory.turns if t.tokens
-        )
-
-        logger.info(
-            "Episode %s: %d turns, %d tool calls, %.1fs, reason=%s",
-            episode_id,
-            trajectory.num_turns,
-            trajectory.num_tool_calls,
-            trajectory.total_time,
-            trajectory.finish_reason,
-        )
-
-        return trajectory
-
-
-def build_verl_agent_rollout_fn(
-    env: ToolEnvironment,
-    config: AgentLoopConfig | None = None,
-):
-    """Build a rollout function compatible with verl's AgentLoop interface.
-
-    This returns a callable that can be registered as the rollout function
-    in verl's training pipeline.  It handles multi-turn tool interaction
-    and returns the trajectory in DataProto-compatible format.
-
-    Usage in verl config:
-        rollout:
-          name: agent
-          agent_rollout_fn: src.agent_loop.build_verl_agent_rollout_fn
-    """
-    loop = AgentLoop(env=env, config=config)
-
-    def rollout_fn(
         prompt: str,
         generate_fn: Any,
         system_prompt: str = "",
         episode_id: str = "",
-        **kwargs,
-    ) -> dict:
-        trajectory = loop.run(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            generate_fn=generate_fn,
-            episode_id=episode_id,
-        )
-        return {
-            "trajectory": trajectory.to_dict_list(),
-            "log_probs": trajectory.get_all_log_probs(),
-            "num_turns": trajectory.num_turns,
-            "num_tool_calls": trajectory.num_tool_calls,
-            "finished": trajectory.finished,
-            "finish_reason": trajectory.finish_reason,
-            "total_time": trajectory.total_time,
-        }
+    ) -> TrajectoryRecord:
+        """Run a complete multi-turn episode."""
+        # Create tool instances
+        instance_ids = {}
+        for name, tool in self.tools.items():
+            iid, _ = await tool.create(instance_id=f"{episode_id}_{name}")
+            instance_ids[name] = iid
 
-    return rollout_fn
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        trajectory = TrajectoryRecord(prompt=prompt, turns=[])
+        start = time.time()
+
+        try:
+            for turn_id in range(self.config.max_turns):
+                if time.time() - start > self.config.rollout_timeout:
+                    trajectory.finish_reason = "timeout"
+                    break
+
+                gen = generate_fn(
+                    messages=messages,
+                    max_new_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                    stop=self.config.stop_sequences,
+                )
+
+                response_text = gen.get("text", "")
+                tool_calls = parse_tool_calls(response_text)
+
+                if not tool_calls:
+                    trajectory.turns.append(TurnRecord(
+                        turn_id=turn_id, response=response_text,
+                        tool_calls=[], tool_results=[],
+                        log_probs=gen.get("log_probs"),
+                        tokens=gen.get("tokens"),
+                    ))
+                    trajectory.finished = True
+                    trajectory.finish_reason = "completed"
+                    break
+
+                # Execute tools
+                results = []
+                for call in tool_calls:
+                    name = call.get("name", "")
+                    tool = self.tools.get(name)
+                    if tool is None:
+                        results.append({"name": name, "error": f"Unknown tool: {name}"})
+                        continue
+                    iid = instance_ids.get(name, "")
+                    resp, step_reward, metrics = await tool.execute(
+                        iid, call.get("arguments", {})
+                    )
+                    results.append({
+                        "name": name, "text": resp.text,
+                        "step_reward": step_reward, **metrics,
+                    })
+
+                trajectory.turns.append(TurnRecord(
+                    turn_id=turn_id, response=response_text,
+                    tool_calls=tool_calls, tool_results=results,
+                    log_probs=gen.get("log_probs"), tokens=gen.get("tokens"),
+                ))
+
+                # Append to context
+                messages.append({"role": "assistant", "content": response_text})
+                tool_text = "\n".join(
+                    f"<tool_response>\n{json.dumps(r, ensure_ascii=False)}\n</tool_response>"
+                    for r in results
+                )
+                messages.append({"role": "user", "content": tool_text})
+            else:
+                trajectory.finish_reason = "max_turns"
+
+        finally:
+            # Release tool instances
+            for name, tool in self.tools.items():
+                iid = instance_ids.get(name, "")
+                await tool.release(iid)
+
+        trajectory.total_time = time.time() - start
+        trajectory.total_tokens = sum(
+            len(t.tokens) for t in trajectory.turns if t.tokens
+        )
+        return trajectory

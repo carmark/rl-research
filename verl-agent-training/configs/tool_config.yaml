@@ -1,0 +1,97 @@
+# =============================================================================
+# Tool Configuration for verl ToolAgentLoop
+# =============================================================================
+# This file is referenced by the training config:
+#   actor_rollout_ref.rollout.multi_turn.tool_config_path: configs/tool_config.yaml
+#
+# Each tool entry specifies:
+#   - class_name: Python import path to a verl BaseTool subclass
+#   - config: tool-specific configuration
+#   - tool_schema: OpenAI function-calling compatible schema
+# =============================================================================
+
+tools:
+  # ---- Calculator ----
+  - class_name: "src.tools.verl_tools.CalculatorTool"
+    config:
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "calculator"
+        description: >
+          Evaluate a mathematical expression. Supports arithmetic operators
+          (+, -, *, /, **, %), math functions (sqrt, log, sin, cos, etc.),
+          and constants (pi, e).
+        parameters:
+          type: "object"
+          properties:
+            expression:
+              type: "string"
+              description: "The mathematical expression to evaluate, e.g. 'sqrt(2) + 3 * pi'"
+          required: ["expression"]
+
+  # ---- Code Executor ----
+  - class_name: "src.tools.verl_tools.CodeExecutorTool"
+    config:
+      type: native
+      backend: "subprocess"           # "subprocess" (dev) or "docker" (prod)
+      timeout: 30.0
+      docker_image: "verl-sandbox:latest"
+      max_memory_mb: 512
+    tool_schema:
+      type: "function"
+      function:
+        name: "code_executor"
+        description: >
+          Execute Python code in a sandboxed environment and return the output.
+          The code should print its result to stdout.
+        parameters:
+          type: "object"
+          properties:
+            code:
+              type: "string"
+              description: "Python code to execute"
+          required: ["code"]
+
+  # ---- Web Search ----
+  - class_name: "src.tools.verl_tools.WebSearchTool"
+    config:
+      type: native
+      backend: "mock"                 # "mock" (dev) or "serpapi" (prod)
+      api_key: null
+      max_results: 5
+      corpus: {}
+    tool_schema:
+      type: "function"
+      function:
+        name: "web_search"
+        description: "Search the web for information related to a query."
+        parameters:
+          type: "object"
+          properties:
+            query:
+              type: "string"
+              description: "The search query"
+          required: ["query"]
+
+  # ---- Database Query ----
+  - class_name: "src.tools.verl_tools.DatabaseQueryTool"
+    config:
+      type: native
+      db_path: ":memory:"
+      max_rows: 100
+    tool_schema:
+      type: "function"
+      function:
+        name: "database_query"
+        description: >
+          Execute a read-only SQL query against the task database
+          and return results as a list of rows. Only SELECT queries are allowed.
+        parameters:
+          type: "object"
+          properties:
+            sql:
+              type: "string"
+              description: "The SQL SELECT query to execute"
+          required: ["sql"]

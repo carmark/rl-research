@@ -1,9 +1,28 @@
-"""Reward function for Agentic RL tool-calling training.
+"""Custom reward function conforming to verl's compute_score interface.
 
-Implements a hybrid reward system combining:
-  - Rule-based rewards (format, task completion, process)
-  - LLM-as-Judge rewards (reasoning quality)
-  - No-op detection and penalty
+verl calls this function for each completed trajectory to compute a scalar
+reward.  The function is registered in the training config:
+
+    reward:
+      custom_reward_function:
+        path: src/reward_function.py
+        name: compute_score
+
+verl's expected signature (sync or async):
+
+    def compute_score(
+        data_source: str,       # dataset name
+        solution_str: str,      # model's full response text
+        ground_truth: str,      # expected answer from dataset
+        extra_info: dict = None,# metadata including num_turns, tool_rewards, etc.
+        **kwargs
+    ) -> float | dict           # float or {"score": float, ...}
+
+When using ToolAgentLoop, extra_info contains:
+    - num_turns: int
+    - tool_rewards: list[float]  (step rewards from BaseTool.execute)
+    - turn_scores: list[float]
+    - rollout_reward_scores: list[float]
 """
 
 from __future__ import annotations
@@ -11,278 +30,143 @@ from __future__ import annotations
 import json
 import re
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RewardConfig:
-    """Configuration for the reward function."""
-
-    # Weights
-    rule_weight: float = 0.7
-    judge_weight: float = 0.3
-
-    # Component scores
-    format_correct: float = 0.1
-    format_incorrect: float = -0.1
-    task_correct: float = 1.0
-    task_incorrect: float = 0.0
-    process_per_call: float = 0.05
-    process_max_calls: int = 10
-
-    # No-op penalty: multiply total reward by this factor when no tools called
-    noop_factor: float = 0.3
-
-    # LLM-as-Judge
-    judge_model: str = "gpt-4"
-    judge_endpoint: str | None = None
-    judge_api_key: str | None = None
-    judge_enabled: bool = False  # disabled by default for cost
+# ---- Configuration (can be overridden via kwargs or environment) ----
+DEFAULT_CONFIG = {
+    "rule_weight": 0.7,
+    "tool_reward_weight": 0.3,
+    "task_correct": 1.0,
+    "task_incorrect": 0.0,
+    "format_bonus": 0.1,
+    "format_penalty": -0.1,
+    "noop_factor": 0.3,
+    "match_mode": "contains",   # "exact", "contains", "numeric"
+}
 
 
-def check_tool_call_format(trajectory: list[dict]) -> tuple[float, int, int]:
-    """Check whether tool calls in the trajectory have valid JSON format.
+def compute_score(
+    data_source: str,
+    solution_str: str,
+    ground_truth: str,
+    extra_info: dict | None = None,
+    **kwargs,
+) -> dict:
+    """Compute reward score for a tool-calling agent trajectory.
+
+    This is the entry point called by verl's reward system.
 
     Returns:
-        (format_score, num_valid_calls, num_total_calls)
+        dict with "score" key (required by verl) plus diagnostic fields.
     """
-    num_valid = 0
-    num_total = 0
+    extra_info = extra_info or {}
+    config = {**DEFAULT_CONFIG, **kwargs}
 
-    for turn in trajectory:
-        tool_calls = turn.get("tool_calls", [])
-        for call in tool_calls:
-            num_total += 1
-            if _is_valid_tool_call(call):
-                num_valid += 1
+    # --- 1. Task completion (rule-based) ---
+    match_mode = config["match_mode"]
+    task_correct = _verify_answer(solution_str, ground_truth, match_mode)
+    task_score = config["task_correct"] if task_correct else config["task_incorrect"]
 
-    if num_total == 0:
-        return 0.0, 0, 0
+    # --- 2. Format quality ---
+    # Check if the response contains well-formed tool call blocks
+    format_score = _check_format(solution_str, config)
 
-    return num_valid / num_total, num_valid, num_total
+    # --- 3. Tool step rewards (from ToolAgentLoop) ---
+    # verl's ToolAgentLoop collects step_reward from each BaseTool.execute()
+    # and passes them in extra_info["tool_rewards"]
+    tool_rewards = extra_info.get("tool_rewards", [])
+    tool_reward_sum = sum(tool_rewards) if tool_rewards else 0.0
+
+    # --- 4. No-op detection ---
+    # If the model answered without making any tool calls, penalize
+    num_turns = extra_info.get("num_turns", 1)
+    has_tools = bool(tool_rewards) or _has_tool_calls(solution_str)
+    is_noop = not has_tools
+
+    # --- 5. Combine ---
+    rule_score = task_score + format_score
+    total = (config["rule_weight"] * rule_score
+             + config["tool_reward_weight"] * tool_reward_sum)
+
+    if is_noop:
+        total *= config["noop_factor"]
+
+    return {
+        "score": total,           # required by verl
+        "task_correct": task_correct,
+        "task_score": task_score,
+        "format_score": format_score,
+        "tool_reward_sum": tool_reward_sum,
+        "num_tool_calls": len(tool_rewards),
+        "num_turns": num_turns,
+        "is_noop": is_noop,
+    }
 
 
-def _is_valid_tool_call(call: dict) -> bool:
-    """Validate that a tool call has the required structure."""
-    if not isinstance(call, dict):
+# ---- Internal helpers ----
+
+def _verify_answer(solution: str, ground_truth: str, mode: str) -> bool:
+    """Check if the model's answer matches the ground truth."""
+    if not solution or not ground_truth:
         return False
-    if "name" not in call:
-        return False
-    if "arguments" not in call:
-        return False
-    if not isinstance(call["name"], str) or not call["name"]:
-        return False
-    if not isinstance(call["arguments"], dict):
-        return False
-    return True
+
+    gt = str(ground_truth).strip().lower()
+    sol = solution.strip().lower()
+
+    if mode == "exact":
+        return gt == sol
+    elif mode == "contains":
+        return gt in sol
+    elif mode == "numeric":
+        return _numeric_match(sol, gt)
+    return gt in sol
 
 
-def verify_answer(
-    trajectory: list[dict],
-    ground_truth: Any,
-    match_mode: str = "exact",
-) -> float:
-    """Verify whether the final answer matches the ground truth.
-
-    Args:
-        trajectory: List of turn dicts, last turn should contain 'response'.
-        ground_truth: Expected answer (string, number, or list).
-        match_mode: 'exact', 'contains', or 'numeric'.
-
-    Returns:
-        1.0 if correct, 0.0 if incorrect.
-    """
-    if not trajectory:
-        return 0.0
-
-    final_response = trajectory[-1].get("response", "")
-    if not final_response:
-        return 0.0
-
-    gt_str = str(ground_truth).strip().lower()
-    resp_str = final_response.strip().lower()
-
-    if match_mode == "exact":
-        return 1.0 if gt_str == resp_str else 0.0
-    elif match_mode == "contains":
-        return 1.0 if gt_str in resp_str else 0.0
-    elif match_mode == "numeric":
-        return _numeric_match(resp_str, gt_str)
-    else:
-        return 1.0 if gt_str == resp_str else 0.0
-
-
-def _numeric_match(response: str, ground_truth: str) -> float:
-    """Extract numbers from both strings and compare."""
-    resp_nums = re.findall(r"-?\d+\.?\d*", response)
+def _numeric_match(solution: str, ground_truth: str) -> bool:
+    """Extract numbers and compare."""
     gt_nums = re.findall(r"-?\d+\.?\d*", ground_truth)
     if not gt_nums:
-        return 0.0
+        return False
     gt_val = float(gt_nums[-1])
-    for num_str in reversed(resp_nums):
+
+    sol_nums = re.findall(r"-?\d+\.?\d*", solution)
+    for n in reversed(sol_nums):
         try:
-            if abs(float(num_str) - gt_val) < 1e-6:
-                return 1.0
+            if abs(float(n) - gt_val) / (abs(gt_val) + 1e-8) < 0.01:
+                return True
         except ValueError:
             continue
-    return 0.0
-
-
-def count_valid_tool_calls(trajectory: list[dict]) -> int:
-    """Count the number of tool calls that executed successfully."""
-    count = 0
-    for turn in trajectory:
-        for result in turn.get("tool_results", []):
-            if isinstance(result, dict) and result.get("success", False):
-                count += 1
-    return count
-
-
-def has_tool_calls(trajectory: list[dict]) -> bool:
-    """Check if the trajectory contains any tool calls."""
-    for turn in trajectory:
-        if turn.get("tool_calls"):
-            return True
     return False
 
 
-def llm_judge_score(
-    prompt: str,
-    trajectory: list[dict],
-    config: RewardConfig,
-) -> float:
-    """Call an external LLM to evaluate the quality of the trajectory.
+def _check_format(solution: str, config: dict) -> float:
+    """Score the format quality of tool calls in the response."""
+    # Look for <tool_call> blocks
+    pattern = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+    matches = pattern.findall(solution)
+    if not matches:
+        return 0.0  # no tool calls to evaluate
 
-    Returns a score between 0.0 and 1.0.
-    """
-    if not config.judge_enabled or not config.judge_endpoint:
-        return 0.5  # neutral score when judge is disabled
+    valid = 0
+    for raw in matches:
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict) and "name" in obj:
+                valid += 1
+        except (json.JSONDecodeError, TypeError):
+            pass
 
-    try:
-        import requests
-    except ImportError:
-        logger.warning("requests not available, returning neutral judge score")
-        return 0.5
+    total = len(matches)
+    if total == 0:
+        return 0.0
 
-    # Build evaluation prompt
-    traj_text = _format_trajectory_for_judge(trajectory)
-    eval_prompt = (
-        "You are an expert evaluator. Rate the quality of the following "
-        "agent trajectory on a scale of 0 to 1.\n\n"
-        f"Task: {prompt}\n\n"
-        f"Trajectory:\n{traj_text}\n\n"
-        "Consider:\n"
-        "1. Were the right tools selected?\n"
-        "2. Were the tool arguments reasonable?\n"
-        "3. Was the reasoning logical?\n"
-        "4. Was the final answer well-supported?\n\n"
-        "Respond with ONLY a number between 0 and 1."
-    )
-
-    try:
-        headers = {"Content-Type": "application/json"}
-        if config.judge_api_key:
-            headers["Authorization"] = f"Bearer {config.judge_api_key}"
-
-        resp = requests.post(
-            config.judge_endpoint,
-            headers=headers,
-            json={
-                "model": config.judge_model,
-                "messages": [{"role": "user", "content": eval_prompt}],
-                "temperature": 0.0,
-                "max_tokens": 16,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-        score = float(content)
-        return max(0.0, min(1.0, score))
-    except Exception as e:
-        logger.warning("LLM judge failed: %s", e)
-        return 0.5
+    ratio = valid / total
+    return config["format_bonus"] * ratio + config["format_penalty"] * (1 - ratio)
 
 
-def _format_trajectory_for_judge(trajectory: list[dict]) -> str:
-    """Format the trajectory for the LLM judge."""
-    lines = []
-    for i, turn in enumerate(trajectory):
-        lines.append(f"--- Turn {i + 1} ---")
-        if turn.get("response"):
-            lines.append(f"Agent: {turn['response'][:500]}")
-        for call in turn.get("tool_calls", []):
-            lines.append(f"Tool call: {json.dumps(call, ensure_ascii=False)[:200]}")
-        for result in turn.get("tool_results", []):
-            lines.append(f"Tool result: {json.dumps(result, ensure_ascii=False)[:200]}")
-    return "\n".join(lines)
-
-
-def compute_reward(
-    prompt: str,
-    trajectory: list[dict],
-    ground_truth: Any,
-    config: RewardConfig | None = None,
-    match_mode: str = "contains",
-) -> dict[str, float]:
-    """Compute the total reward for a trajectory.
-
-    Args:
-        prompt: The original task prompt.
-        trajectory: List of turn dicts with keys:
-            - response: str (LLM output)
-            - tool_calls: list[dict] (parsed tool calls)
-            - tool_results: list[dict] (execution results)
-        ground_truth: Expected answer for verification.
-        config: Reward configuration. Uses defaults if None.
-        match_mode: Answer matching mode ('exact', 'contains', 'numeric').
-
-    Returns:
-        Dict with individual scores and total reward.
-    """
-    if config is None:
-        config = RewardConfig()
-
-    # 1. Format reward
-    format_ratio, num_valid, num_total = check_tool_call_format(trajectory)
-    if num_total > 0:
-        format_score = (
-            config.format_correct * format_ratio
-            + config.format_incorrect * (1 - format_ratio)
-        )
-    else:
-        format_score = 0.0
-
-    # 2. Task completion reward
-    task_score = verify_answer(trajectory, ground_truth, match_mode)
-    task_reward = config.task_correct if task_score > 0.5 else config.task_incorrect
-
-    # 3. Process reward
-    valid_calls = min(count_valid_tool_calls(trajectory), config.process_max_calls)
-    process_score = valid_calls * config.process_per_call
-
-    # 4. LLM-as-Judge score
-    judge_score = llm_judge_score(prompt, trajectory, config)
-
-    # 5. Combine
-    rule_score = format_score + task_reward + process_score
-    total = config.rule_weight * rule_score + config.judge_weight * judge_score
-
-    # 6. No-op penalty
-    is_noop = not has_tool_calls(trajectory)
-    if is_noop:
-        total *= config.noop_factor
-
-    return {
-        "total": total,
-        "format_score": format_score,
-        "task_score": task_reward,
-        "process_score": process_score,
-        "judge_score": judge_score,
-        "num_valid_calls": num_valid,
-        "num_total_calls": num_total,
-        "is_noop": is_noop,
-    }
+def _has_tool_calls(solution: str) -> bool:
+    """Check if the response text contains any tool call blocks."""
+    return "<tool_call>" in solution

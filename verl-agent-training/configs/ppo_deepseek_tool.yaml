@@ -1,214 +1,122 @@
 # =============================================================================
-# PPO + DeepSeek MoE Tool-Calling Agent Training Configuration (Backup)
+# PPO + DeepSeek MoE Tool-Calling Agent — verl Hydra Config (Backup)
 # =============================================================================
-# Alternative configuration using PPO algorithm. Requires a Critic model,
-# using ~2x GPU resources compared to GRPO.
+# Alternative using PPO. Requires a Critic model (more GPU memory).
 #
 # Usage:
-#   python -m verl.trainer.main --config configs/ppo_deepseek_tool.yaml
+#   python3 -m verl.trainer.main_ppo \
+#       --config-path=configs \
+#       --config-name=ppo_deepseek_tool
 # =============================================================================
 
-# ---------------------
-# Model Configuration
-# ---------------------
-model:
-  name: "deepseek-ai/DeepSeek-V2.5"
-  trust_remote_code: true
-  dtype: "bfloat16"
-  lora:
-    enabled: false
-    rank: 64
-    alpha: 128
-    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
-    dropout: 0.0
+algorithm:
+  adv_estimator: gae                     # GAE for PPO (requires critic)
 
-# ---------------------
-# Critic Model
-# ---------------------
-critic:
-  name: "deepseek-ai/DeepSeek-V2.5"          # 通常与 Actor 同架构
-  separate_gpu: false                          # true: Critic 单独占用 GPU
-  dtype: "bfloat16"
-  lr: 5.0e-6                                  # Critic 学习率通常较高
-  lora:
-    enabled: true                              # Critic 推荐使用 LoRA 节省显存
-    rank: 32
-    alpha: 64
-
-tokenizer:
-  name: null
-  padding_side: "left"
-
-# ---------------------
-# Data
-# ---------------------
 data:
   train_files:
-    - "data/train_prompts.jsonl"
-  eval_files:
-    - "data/eval_prompts.jsonl"
+    - data/train_prompts.jsonl
+  val_files:
+    - data/eval_prompts.jsonl
+  train_batch_size: 128                  # smaller due to critic memory
   max_prompt_length: 2048
   max_response_length: 4096
+  return_raw_chat: true
   shuffle: true
-  seed: 42
 
-# ---------------------
-# Rollout
-# ---------------------
-rollout:
-  name: "vllm"
-  mode: "server"
-  tensor_parallel_size: 8
-  gpu_memory_utilization: 0.85
-  dtype: "float16"
-  max_model_len: 16384
+actor_rollout_ref:
+  model:
+    path: deepseek-ai/DeepSeek-V2.5
+    trust_remote_code: true
 
-  generation:
-    max_new_tokens: 4096
+  actor:
+    strategy: megatron
+    ppo_micro_batch_size_per_gpu: 1      # smaller for PPO (actor + critic)
+    ppo_mini_batch_size: 64
+    grad_clip: 1.0
+    ppo_epochs: 4                        # PPO inner epochs
+    optim:
+      lr: 5.0e-7                         # smaller LR for PPO actor
+      weight_decay: 0.01
+    lr_scheduler:
+      type: cosine
+      warmup_steps: 50
+      min_lr_ratio: 0.1
+    megatron:
+      tensor_model_parallel_size: 4
+      pipeline_model_parallel_size: 2
+      expert_model_parallel_size: 8
+      sequence_parallel: true
+
+  rollout:
+    name: vllm
+    n: 1                                 # PPO: single sample per prompt
     temperature: 0.7
     top_p: 0.95
-    stop_sequences: ["<|endoftext|>", "<|im_end|>"]
+    max_new_tokens: 4096
+    tensor_model_parallel_size: 8
+    gpu_memory_utilization: 0.80         # less memory for rollout (critic needs space)
 
-  agent_loop:
-    enabled: true
-    max_turns: 10
-    tool_timeout: 30
-    rollout_timeout: 120
+    multi_turn:
+      enable: true
+      max_assistant_turns: 10
+      max_user_turns: 10
+      max_parallel_calls: 5
+      max_tool_response_length: 2048
+      format: chatml
+      tool_config_path: configs/tool_config.yaml
 
-# ---------------------
-# Training
-# ---------------------
-training:
-  backend: "megatron"
+    agent:
+      default_agent_loop: tool_agent
+      num_workers: 8
 
-  parallel:
-    tensor_parallel_size: 4
-    pipeline_parallel_size: 2
-    data_parallel_size: 4                     # PPO 需要分配 GPU 给 Critic
-    expert_parallel_size: 8
-    context_parallel_size: 1
-    sequence_parallel: true
+    server:
+      timeout: 60
+      max_attempts: 3
 
-  optimizer:
-    name: "adamw"
-    lr: 5.0e-7                                # PPO 通常使用更小的 Actor lr
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+
+# ---- Critic ----
+critic:
+  model:
+    path: deepseek-ai/DeepSeek-V2.5     # same architecture as actor
+    trust_remote_code: true
+  strategy: megatron
+  ppo_micro_batch_size_per_gpu: 1
+  optim:
+    lr: 5.0e-6                           # critic LR typically higher
     weight_decay: 0.01
-    betas: [0.9, 0.999]
-
-  scheduler:
-    name: "cosine"
+  lr_scheduler:
+    type: cosine
     warmup_steps: 50
-    min_lr_ratio: 0.1
 
-  micro_batch_size: 1                         # PPO 显存压力更大
-  gradient_accumulation_steps: 8
-  max_grad_norm: 1.0
-  epochs_per_update: 1
-  total_training_steps: 5000
-
-  mixed_precision:
-    enabled: true
-    dtype: "bfloat16"
-
-  checkpoint:
-    save_steps: 200
-    save_dir: "checkpoints/"
-    max_checkpoints: 5
-
-# ---------------------
-# Algorithm (PPO)
-# ---------------------
-algorithm:
-  name: "ppo"
-
-  ppo:
-    clip_ratio: 0.2
-    kl_coeff: 0.02                            # PPO 通常使用稍大的 KL 系数
-    entropy_coeff: 0.01
-    value_loss_coeff: 0.5
-    gae_lambda: 0.95                          # GAE lambda
-    gamma: 1.0                                # 折扣因子 (单步对话=1.0)
-    num_mini_batches: 4                       # PPO mini-batch 数
-    ppo_epochs: 4                             # 每批数据训练的 epoch 数
-
-  reference:
-    enabled: true
-    update_interval: 0
-
-# ---------------------
-# Reward (same as GRPO)
-# ---------------------
+# ---- Reward ----
 reward:
-  rule_weight: 0.7
-  format_correct: 0.1
-  format_incorrect: -0.1
-  task_correct: 1.0
-  task_incorrect: 0.0
-  process_per_call: 0.05
-  process_max_calls: 10
-  noop_factor: 0.3
-  match_mode: "contains"
+  custom_reward_function:
+    path: src/reward_function.py
+    name: compute_score
 
-  judge_weight: 0.3
-  judge:
-    enabled: false
-    model: "gpt-4"
-    endpoint: null
+# ---- PPO-specific ----
+algorithm_config:
+  ppo:
+    eps_clip: 0.2
+    value_clip: 0.2
+    kl_ctrl:
+      type: fixed
+      kl_coef: 0.02
+    entropy_coeff: 0.01
+    gamma: 1.0
+    lam: 0.95                            # GAE lambda
 
-# ---------------------
-# Tools (same as GRPO)
-# ---------------------
-tools:
-  web_search:
-    enabled: true
-    backend: "mock"
-  calculator:
-    enabled: true
-  code_executor:
-    enabled: true
-    backend: "subprocess"
-  database:
-    enabled: true
-    db_path: ":memory:"
-  cleanup_on_reset: true
-
-# ---------------------
-# Resources
-# ---------------------
-resources:
-  num_gpus: 64
-  colocate: true
-  ray:
-    address: "auto"
-    namespace: "verl-agent"
-
-weight_sync:
-  engine: "3d_hybrid"
-  backend: "nccl"
-
-# ---------------------
-# Logging
-# ---------------------
-logging:
-  project: "verl-agent-tool-calling-ppo"
-  wandb:
-    enabled: true
-    project: "verl-agent"
-  log_interval: 10
-  eval_interval: 100
-  metrics:
-    - "reward/mean"
-    - "reward/std"
-    - "policy/loss"
-    - "policy/kl"
-    - "policy/entropy"
-    - "critic/loss"
-    - "critic/explained_variance"
-    - "rollout/num_turns_mean"
-    - "system/gpu_utilization"
-
-moe:
-  monitor_routing_consistency: true
-  routing_diff_threshold: 0.05
-  r3_routing_replay: false
-  load_balance_loss_coeff: 0.01
+# ---- Trainer ----
+trainer:
+  total_epochs: 15
+  save_freq: 200
+  test_freq: 100
+  project_name: verl-agent-tool-calling-ppo
+  experiment_name: ppo_deepseek_tool
+  logger:
+    - wandb
+  nnodes: 8
+  n_gpus_per_node: 8
+  save_path: checkpoints/
