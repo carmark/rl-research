@@ -1,6 +1,6 @@
 # verl Agentic RL 训练 — Infra 准备方案
 
-> 日期: 2026-04-26 | 目标: 基于 verl 训练工具调用 Agent | 基座: DeepSeek MoE | 集群: 64+ GPU
+> 日期: 2026-04-27 | 目标: 基于 verl 训练工具调用 Agent | 基座: DeepSeek V4-Flash / MoE | 集群: 64+ GPU
 >
 > 相关文档: [verl-integration.md](verl-agent-training/verl-integration.md) (AgentLoop/Reward/Tool 接口详解)
 
@@ -49,6 +49,9 @@ Agentic RL 的 infra 与传统 LLM RL 最大的区别在于 **AgentLoop**——R
 | **存储** | 模型 + checkpoint | + 沙箱临时文件、工具 corpus | Docker 镜像层 |
 | **并发** | batch 内同步 | batch 内异步 (不同 sample 不同轮次数) | async + 动态批处理 |
 | **容错** | 训练崩溃重启 | + 工具超时、沙箱崩溃、推理 Server 重连 | 超时/重试机制 |
+| **Rollout 长尾** | 均匀输出长度 | 尾部 10% 请求占 50% 总时间 (Seer 实证) | Divided Rollout + PD 解耦 |
+| **KV Cache 迁移** | 单实例本地 KV | 单次 Rollout 数十 TB KV Cache, 跨实例迁移 | 全局 KV Cache Pool (Mooncake) |
+| **PD 解耦** | Prefill/Decode 混合 | 多轮长前缀 Prefill 抢占/中断 Decode | Prefill 和 Decode 专用资源 |
 
 ---
 
@@ -85,6 +88,7 @@ Agentic RL 的 infra 与传统 LLM RL 最大的区别在于 **AgentLoop**——R
 | Checkpoint | 高速并行文件系统 | 5-10TB | 每个 checkpoint ~500GB (236B), 保留 5 个 |
 | 训练数据 | NFS | 100GB+ | Prompt 数据集 + 工具 corpus |
 | 日志/监控 | 本地 SSD | 500GB/节点 | WandB 日志、训练 metrics |
+| **KV Cache Pool 外部存储** | **NVMe SSD Tier** | **每节点 2-4TB** | Mooncake-style 全局 KV Cache Pool 温层; 单次 Rollout 可产生数十 TB KV Cache (Seer 实证); 本地 SSD 作为 DRAM 外延, 冷数据下沉 |
 
 ### CPU & 内存
 
@@ -97,9 +101,10 @@ Agentic RL 的 infra 与传统 LLM RL 最大的区别在于 **AgentLoop**——R
 - 保守估算：`num_workers × max_parallel_calls × 2` = 8 × 5 × 2 = **80 个并发进程**
 - CPU 核数建议 ≥ AgentLoopWorker 数 + 工具并发数 + 系统开销
 
-**AgentLoop 对内存的额外需求**：多轮交互中上下文不断累积（每轮追加 LLM 输出 + 工具返回），单条轨迹可达 16K-32K token。vLLM Server 需要为每个并发请求维护 KV Cache：
+**AgentLoop 对内存的额外需求**：多轮交互中上下文不断累积（每轮追加 LLM 输出 + 工具返回），单条轨迹可达 16K-32K token (Agentic 场景下 Kimi-K2 输出均值高达 39K token, Rollout 占迭代时间 87%)。vLLM Server 需要为每个并发请求维护 KV Cache：
 - KV Cache 估算：`并发请求数 × 上下文长度 × 模型维度 × 层数 × 2(K+V) × dtype_size`
 - 236B MoE, 256 并发, 16K 上下文 ≈ 需要额外 **40-60GB** GPU 显存用于 KV Cache
+- **全局 KV Cache Pool**: 生产环境 (Divided Rollout) 下, 单次 Rollout 迭代产生数十 TB KV Cache, 需 Mooncake-style 两层缓存 (DRAM + NVMe SSD)
 - 通过 `gpu_memory_utilization: 0.85` 控制 KV Cache 上限
 
 ---
@@ -131,6 +136,8 @@ Agentic RL 的 infra 与传统 LLM RL 最大的区别在于 **AgentLoop**——R
 ├─────────────────────────────────────────────────────────┤
 │  NVIDIA Driver ≥ 535   │  Docker Engine   │  InfiniBand   │
 │  (GPU 推理/训练)       │  (工具沙箱)      │  (集群通信)   │
+├─────────────────────────────────────────────────────────┤
+│  (可选) MXFP4 + TileLang │  (可选) 3FS   │               │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -186,6 +193,26 @@ docker build -t verl-sandbox:latest -f docker/Dockerfile.sandbox .
 
 ```bash
 pip install wandb  # 训练曲线可视化
+```
+
+**6) FP4 量化支持 (DeepSeek V4 启发)**
+
+```bash
+# MXFP4 量化库 (FP4→FP8 反量化推理)
+pip install mxfp4  # 或从 DeepSeek 官方仓库安装
+
+# TileLang — 高效 kernel 开发框架 (FP4/FP8 自定义 kernel)
+pip install tilelang
+# 或从源码: git clone https://github.com/tile-ai/tilelang && pip install -e .
+```
+
+**7) 3FS 分布式文件系统 (可选, 用于 Token-WAL 和 KV Cache 持久化)**
+
+```bash
+# 3FS 是 DeepSeek 开源的分布式文件系统
+# 用于 Token-WAL 持久化、KV Cache 外部存储、百万 Token 数据加载
+# 安装参考: https://github.com/deepseek-ai/3FS
+# 注意: 3FS 需要专用存储节点，非必须组件
 ```
 
 ---
@@ -283,6 +310,57 @@ AgentLoop **要求**推理引擎以 Server 模式运行（而非传统的 batch 
 - AgentLoopWorker 通过 HTTP 与 Server 通信
 - 确保节点内 / 跨节点 HTTP 端口不被防火墙阻断
 
+#### 4.1.1 PD 解耦部署方案 (参考 SLIME/GLM-5)
+
+多轮 Agentic RL 中长前缀 Prefill 抢占 Decode 是生产环境的主要瓶颈。部署方案:
+
+| 部署模式 | 配置 | 适用场景 |
+|---------|------|---------|
+| **共享模式** | Prefill/Decode 混合运行 | 验证阶段, 短上下文 (< 16K) |
+| **PD 解耦模式** | Prefill 专用节点 + Decode 专用节点 | 生产训练, 200K+ 上下文, 多轮 Agent |
+
+PD 解耦 Infra 准备:
+- Prefill 资源池: GPU 计算密集 (矩阵乘法), 可分配较少 GPU
+- Decode 资源池: 显存带宽密集 (KV Cache 读取), 需充足显存
+- Prefill→Decode KV Cache 传输: 节点间 RDMA/NVLink, 延迟敏感
+- 路由调整: `GlobalRequestLoadBalancer` 需区分 Prefill 和 Decode 请求
+
+#### 4.1.2 DP-aware Routing 配置 (参考 SLIME/GLM-5)
+
+升级现有 Sticky Session 为 **Rollout 级亲和性**:
+- 路由键从 `request_id` 升级为 `rollout_id` (同一 Agent 实例的标识)
+- 同一 Rollout 的所有多轮请求路由到同一 Server, 最大化 KV Cache 复用
+- 配置位置: `rollout.load_balancer.affinity_key: rollout_id`
+
+#### 4.1.3 全局 KV Cache Pool 部署选项 (参考 Seer/Mooncake)
+
+Divided Rollout (chunk 级调度) 要求 KV Cache 可跨实例迁移。部署路径:
+
+| 阶段 | 方案 | 存储 | 说明 |
+|------|------|------|------|
+| **短期** | 本地 KV Cache | GPU HBM | vLLM/SGLang 内置, 无额外 Infra |
+| **中期** | 3FS 共享 KV | NVMe SSD + 3FS | 跨实例 KV 共享, 迁移时避免重 Prefill |
+| **长期** | Mooncake 两层缓存 | DRAM (热) + NVMe SSD (温) | 全局 KV Pool, 单次迭代数十 TB 容量 |
+
+容量估算 (Kimi-K2 级别): 平均输出 39K token, DP32, group_size=8, 单迭代 ≈ 10-50 TB KV Cache
+
+#### 4.1.4 Seer Divided Rollout 参考 (chunk 级调度 + Context-Aware)
+
+当 Rollout 长尾严重时 (tail_time_ratio > 30%), 考虑 Divided Rollout:
+- 将请求分解为 chunk 级可调度单元 (有界生成段)
+- 每 chunk 完成后调度到最空闲实例, 持续再平衡
+- Context-Aware Scheduling: 投机探针估计 Group 长度, 近似 Oracle LFS (仅差 7%)
+- **前提**: 全局 KV Cache Pool (§4.1.3)
+- **效果**: 尾部延迟 -72~94%, Rollout 吞吐量 +44~104% (Seer 三个生产工作负载)
+
+#### 4.1.5 DGDS 投机解码选项 (参考 Seer)
+
+DGDS 利用 GRPO 组内 Token 模式相似性加速解码, 无需独立草稿模型:
+- 组内 CST (压缩后缀树) 作为草稿来源
+- MBA 自适应草稿预算
+- 长尾阶段 (并发度低) 收益最大 (+54%)
+- **何时启用**: tail_time_ratio 高且 group_size ≥ 8 时考虑
+
 ### 4.2 AgentLoopWorker — 并发执行架构
 
 AgentLoopWorker 是 **CPU 侧的 Ray Actor**，负责编排每个 sample 的多轮交互：
@@ -331,6 +409,35 @@ AgentLoopManager
 
 verl 的 `GlobalRequestLoadBalancer` (Ray Actor) 自动实现 Sticky Session，按 `request_id` 路由。**这要求 Load Balancer 的 Ray Actor 网络可达所有 AgentLoopWorker 和 Server 实例。**
 
+#### Multi-Task Rollout Orchestrator 架构 (参考 SLIME/GLM-5)
+
+生产环境中多任务 RL (SWE/Terminal/Search 等) 需要异构 Rollout 逻辑。GLM-5 的微服务架构:
+
+```
+AgentLoopManager
+  │
+  ├── Multi-Task Rollout Orchestrator (中央编排器)
+  │     ├── SWE Rollout 微服务 (独立 Rollout + Reward 逻辑)
+  │     ├── Terminal Rollout 微服务
+  │     ├── Search Rollout 微服务
+  │     └── Custom Rollout 微服务 (即插即用)
+  │
+  │     编排器职责:
+  │       - 控制每任务 Rollout 比率和生成速度
+  │       - 动态调整任务采样比率
+  │       - 细粒度任务进度监控
+  │       - 统一 message-list 轨迹表示
+  │
+  ├── AgentLoopWorker 0 ... N (现有架构不变)
+  └── ...
+```
+
+Infra 要求:
+- 每个 Rollout 微服务独立部署 (HTTP 端点)
+- 中央编排器需额外 CPU/内存 (Ray Actor)
+- 标准化轨迹接口 (所有任务输出 message-list 格式)
+- 已验证支持 1000+ 并发 Rollout
+
 ### 4.3 多轮上下文管理 — 内存与 Token 预算
 
 AgentLoop 的上下文随轮次线性增长：
@@ -371,6 +478,27 @@ actor_rollout_ref:
 ```
 
 **注意**：`max_response_length` 包含所有轮次的 LLM 输出和工具返回 token。如果 10 轮交互累积超过此值，AgentLoop 会强制终止。生产环境建议 `max_response_length ≥ 8192`。
+
+#### Context Management 策略 (参考 SLIME/GLM-5)
+
+GLM-5 实证：超长上下文 (>100K token) 下 Agent 准确率显著下降。主动上下文管理策略:
+
+| 策略 | 机制 | 适用场景 | 效果 |
+|------|------|---------|------|
+| **Keep-recent-k** | 保留最近 k 轮 (k=5), 折叠旧观察 (`"Tool result is omitted to save tokens."`) | 通用 Agent 任务 | 平衡长度与信息 |
+| **Discard-all** | 重置全部工具调用历史 | 轮次间独立性强的任务 | 最激进截断 |
+| **HCM (Hybrid)** | Keep-recent-k + 选择性保留 | 复杂多步任务 | BrowseComp +14% |
+
+Infra 配置:
+```yaml
+agent:
+  context_management:
+    strategy: keep_recent_k     # keep_recent_k | discard_all | hcm
+    k: 5                         # 保留最近 k 轮观察
+    max_context_tokens: 65536    # 触发 CM 的上下文长度阈值
+  thinking:
+    mode: interleaved            # interleaved (每轮思考) | preserved (跨轮保留)
+```
 
 ### 4.4 工具执行 Infra
 
@@ -476,7 +604,7 @@ extra_fields:
 └─────────────────────────┘    └─────────────────────────┘
 ```
 
-**对 infra 的要求：**
+**基础 Off-Policy Infra：**
 
 | 组件 | 说明 |
 |------|------|
@@ -485,7 +613,36 @@ extra_fields:
 | **丢弃策略** | 版本差距 > 2 的轨迹丢弃 (配置在 verl 的 async mode) |
 | **Ray Object Store** | 缓冲区通常使用 Ray 的共享内存，确保节点内存充足 |
 
-同步模式（默认推荐）下不需要这些，但吞吐量会受限于 AgentLoop 的长尾延迟。
+同步模式（默认推荐）下不需要这些，但吞吐量会受限于 AgentLoop 的长尾延迟。注意 Seer 证明严格同步方案 (Divided Rollout) 吞吐量可反超非严格异步方案 43%。
+
+#### IcePop + Token-level Clip Off-Policy 控制 (参考 SLIME/GLM-5 生产实践)
+
+异步 Agentic RL 中单条轨迹可跨多个策略版本，Off-Policy 偏差尤为严重。GLM-5 的 IcePop 机制提供多层防线:
+
+| 层次 | 机制 | Infra 需求 |
+|------|------|-----------|
+| **IcePop pop 操作** | IS 比率 ρ 超出 `[1/β, β]` 时置零 | 无额外 Infra, 算法层 |
+| **Token-level Clipping** | log-prob 比率裁剪 `[1-ε_l, 1+ε_h]` | 无额外 Infra, 算法层 |
+| **版本丢弃** | 轨迹版本差距 `w'-w0 > τ` 则丢弃 | Buffer 需记录每条轨迹的策略版本序列 |
+| **环境噪声过滤** | 排除环境崩溃 (非模型能力) 导致的失败 | 工具执行需记录失败原因 (环境/模型) |
+| **不完整 Group 补齐** | 噪声过滤后 group 不完整时复制有效样本或整组丢弃 | GRPO group 管理逻辑 |
+| **优化器重置** | 每次权重同步后重置 Adam momentum 等状态 | 训练引擎配置 |
+
+配置建议:
+```yaml
+async_training:
+  icepop:
+    beta: 3.0                    # pop 范围 [1/3, 3]
+  token_clip:
+    eps_low: 0.2
+    eps_high: 0.3
+  version_filter:
+    tau: 3                       # 版本差距阈值
+  noise_filter:
+    enabled: true                # 排除环境崩溃样本
+  optimizer_reset:
+    enabled: true                # 每次权重同步后重置
+```
 
 ### 4.7 容错与超时 Infra
 
@@ -499,6 +656,7 @@ AgentLoop 多轮交互引入了多个失败点，每个都需要对应的 infra 
 | Docker daemon 故障 | 容器无法启动 | 降级到 subprocess 模式 |
 | 外部 API 不可用 | web_search / LLM-Judge 超时 | mock 模式降级 + 异步重试 |
 | AgentLoopWorker 崩溃 | Ray Actor 异常退出 | Ray 自动重启 Actor |
+| **Rollout Server 不健康** | **心跳超时, 响应变慢** | **Heartbeat 监控 (每 5-10s) + 主动终止 + 路由注销 + 自动重试到健康 Server** (参考 SLIME/GLM-5) |
 
 **推荐的超时配置层次：**
 
@@ -508,6 +666,80 @@ rollout_timeout: 120s          ← 整条轨迹的总时限
   └─ per-tool execute: 30s     ← 单次工具调用
   └─ per-turn total: ~90s      ← 单轮 (generate + parse + execute)
 ```
+
+### 4.8 容错与可抢占 Rollout (Token-WAL)
+
+> 参考 DeepSeek V4 的 Token-WAL 机制，为大规模 Agentic RL 训练提供容错保障。
+
+#### Token-WAL 部署要求
+
+| 组件 | 要求 | 说明 |
+|------|------|------|
+| 持久化存储 | 高速 NVMe SSD 或 3FS | WAL 日志写入，要求低延迟 |
+| 存储容量 | 每个 Rollout 实例 100GB+ | Token 序列 + KV Cache 快照 |
+| 网络 | 25Gbps+ | WAL 同步到持久化存储 |
+| 检查点间隔 | 每 256-1024 Token | 平衡 I/O 开销和恢复粒度 |
+
+#### KV Cache 持久化存储
+
+百万 Token 上下文下，KV Cache 体积巨大：
+- V4-Flash (284B): 百万 Token KV Cache ≈ 数 GB (CSA/HCA 压缩后)
+- 传统 MLA: 百万 Token KV Cache ≈ 数十 GB
+
+持久化方案：
+- **短期**: 本地 NVMe SSD + checkpoint
+- **中期**: 3FS 分布式文件系统 (共享 KV Cache)
+- **长期**: Mooncake-style 两层 DRAM+SSD 缓存
+
+#### 长度偏差校正
+
+可抢占 Rollout 中，长序列更容易被抢占，导致训练数据偏向短序列。校正方案：
+- 记录每条轨迹的抢占历史
+- 按实际生成长度 / 预期长度比率加权
+- 或在 RL advantage 计算中引入长度归一化
+
+### 4.9 百万 Token 训练准备 (DeepSeek V4 启发)
+
+#### 数据格式: metadata + per-token 字段分离
+
+传统 DataProto 将所有字段统一在一个张量中。百万 Token 时需要分离：
+
+```
+metadata.jsonl:     # 样本级，体积小
+  {"id": "sample_1", "reward": 0.85, "num_turns": 5, "length": 524288}
+
+per_token/sample_1.bin:  # per-token 字段，按需加载
+  input_ids:    int32[524288]
+  attention_mask: bool[524288]
+  log_probs:    float32[524288]
+```
+
+优势：
+- 元数据可以全部加载到内存用于调度和采样
+- per-token 数据按需从共享内存或文件系统加载
+- 避免超长序列导致的 OOM
+
+#### 共享内存数据加载器
+
+```python
+# 使用 Python multiprocessing.shared_memory 或 POSIX shm
+# 多个 Worker 共享大序列数据，避免复制
+import multiprocessing.shared_memory as shm
+
+# 创建共享内存块
+block = shm.SharedMemory(create=True, size=sequence_bytes)
+# 多个 Worker 通过名称访问同一块内存
+```
+
+#### 动态 mini-batch 数量调整
+
+| 序列长度范围 | mini-batch 大小 | GPU 显存占用 |
+|-------------|----------------|-------------|
+| < 8K | 128 | 正常 |
+| 8K - 64K | 32 | 中等 |
+| 64K - 256K | 8 | 较大 |
+| 256K - 1M | 2 | 接近上限 |
+| > 1M | 1 | 需要 CP (Context Parallel) |
 
 ---
 
@@ -520,6 +752,10 @@ rollout_timeout: 120s          ← 整条轨迹的总时限
 ```bash
 # DeepSeek-V2.5 (236B MoE, ~470GB FP16 / ~235GB FP8)
 huggingface-cli download deepseek-ai/DeepSeek-V2.5 --local-dir /shared/models/deepseek-v2.5
+
+# DeepSeek-V4-Flash (284B MoE, ~140GB FP8 / ~70GB FP4)
+# 注: V4-Flash 使用 CSA/HCA 注意力, KV Cache 减少 90%
+huggingface-cli download deepseek-ai/DeepSeek-V4-Flash --local-dir /shared/models/deepseek-v4-flash
 
 # 确保所有节点都能通过共享文件系统访问
 ```
@@ -634,9 +870,29 @@ AgentLoop: 8 个 vLLM Server 实例 (TP=8), 8 个 AgentLoopWorker
 关注指标:
   - rollout/num_turns_mean: 平均交互轮次 (目标 3-5)
   - rollout/timeout_ratio: 超时比例 (目标 < 5%)
+  - rollout/tail_time_ratio: 尾部时间占比 (目标 < 15%, 参考 Seer)
   - reward/is_noop_ratio: 无工具调用比例 (目标持续下降)
   - system/weight_sync_ms: 权重同步延迟 (目标 < 500ms)
+  - off_policy/drop_ratio: Off-policy 丢弃率 (目标 < 20%)
 ```
+
+#### 三阶段 RL 流水线 (参考 GLM-5)
+
+生产级 Agentic RL 建议采用渐进式流水线, 各阶段对 Infra 需求递增:
+
+```
+Reasoning RL ──→ Agentic RL ──→ General RL ──→ OPD (可选)
+  (同步)          (完全异步)       (混合)         (同步蒸馏)
+```
+
+| 阶段 | 训练模式 | 新增 Infra | 关键配置 |
+|------|---------|-----------|---------|
+| **Reasoning RL** | 同步 On-Policy | 标准 RL Infra | GRPO + IcePop, group_size=32 |
+| **Agentic RL** | 完全异步 | PD 解耦 + Heartbeat + Multi-Task Orchestrator + 10K+ 环境 | Token-clip, 优化器重置 |
+| **General RL** | 混合 | 多维度奖励系统 | Rule + Judge + RM |
+| **OPD** (可选) | 同步蒸馏 | 多教师调度 | group_size=1, batch_size=1024 |
+
+注: Reasoning RL 阶段可复用阶段 2 验证的 Infra; Agentic RL 阶段需要本阶段新增的 PD 解耦、Heartbeat、Multi-Task Orchestrator 等组件。
 
 ---
 
@@ -647,13 +903,18 @@ AgentLoop: 8 个 vLLM Server 实例 (TP=8), 8 个 AgentLoopWorker
 | **GPU** | 8× 80GB (验证) | 64× H800 (训练) | 128+ (生产) |
 | **网络** | 节点内 NVLink | 节点间 IB 200Gbps | IB 400Gbps + GPUDirect RDMA |
 | **存储** | NFS 2TB (模型) | Lustre 10TB (Checkpoint) | 高速 SSD Tier |
-| **软件** | verl, vLLM, PyTorch, Ray | Megatron-LM, NCCL, WandB | DeepEP, NIXL |
+| **软件** | verl, vLLM, PyTorch, Ray | Megatron-LM, NCCL, WandB, MXFP4 | DeepEP, NIXL, TileLang, 3FS |
 | **沙箱** | subprocess (开发) | Docker (训练) | Kubernetes (生产) |
 | **监控** | WandB | Prometheus + Grafana | 自定义 MoE 路由监控 |
 | **AgentLoop** | ToolAgentLoop + tool_config.yaml | Sticky Session + Docker 工具沙箱 | 自定义 AgentLoop + 异步训练 |
 | **奖励** | compute_score() 函数 | tool_rewards 步级奖励 | LLM-as-Judge (外部 API) |
 | **并发** | asyncio 协程 | num_workers=8, max_parallel_calls=5 | 自定义并发策略 |
-| **容错** | 工具超时 30s | rollout_timeout 120s + Server 重试 | 部分 rollout 回收 (APRIL) |
+| **容错** | 工具超时 30s | rollout_timeout 120s + Server 重试 + **Heartbeat 监控** | 部分 rollout 回收 (APRIL) |
+| **Rollout 优化** | 基础 Sticky Session | **PD 解耦** (多轮 Agent 生产必备) | **Divided Rollout** (Seer, chunk 级调度) |
+| **KV Cache** | 本地 KV Cache (vLLM 内置) | **3FS 共享 KV** | **Mooncake 全局 Pool** (数十 TB) |
+| **多任务** | 单任务 Rollout | - | **Multi-Task Orchestrator** (微服务架构, 1000+ 并发) |
+| **Off-Policy** | 版本管理 + 丢弃 | **IcePop pop + Token-level Clip** | 优化器重置 + 噪声过滤 |
+| **上下文管理** | max_response_length 截断 | **Keep-recent-k (k=5)** | HCM 混合策略 |
 
 ### AgentLoop Infra 核心检查清单
 
