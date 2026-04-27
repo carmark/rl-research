@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>7 系统对比 - Agentic RL 训练系统</title>
+<title>9 系统对比 - Agentic RL 训练系统</title>
 <link rel="stylesheet" href="shared.css">
 <style>
   .cmp-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; margin: 1rem 0; }
@@ -28,7 +28,7 @@
 <body>
 
 <div class="page-header">
-  <h1>7 系统横向对比</h1>
+  <h1>9 系统横向对比</h1>
   <p class="subtitle">Agentic RL 训练系统基础设施对比分析</p>
 </div>
 
@@ -103,6 +103,20 @@
         <td><span class="chip t">SAPO</span> <span class="chip i">P2P 训练</span></td>
         <td>小模型</td>
       </tr>
+      <tr>
+        <td><b>ThunderAgent</b></td><td>Together AI</td>
+        <td><span class="chip i">Program 感知</span></td>
+        <td>工作流级</td><td>工作流解耦</td>
+        <td><span class="chip r">Program 抽象</span> <span class="chip d">KV-Cache 感知</span></td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td><td>DeepSeek AI</td>
+        <td><span class="chip t">端到端内部系统</span></td>
+        <td>集中式</td><td>端到端</td>
+        <td><span class="chip t">OPD</span> <span class="chip r">Token-WAL</span> <span class="chip d">FP4</span></td>
+        <td>1.6T MoE</td>
+      </tr>
     </table>
   </div>
 
@@ -169,10 +183,22 @@
         <td>-</td>
         <td>-</td>
       </tr>
-    </table>
-  </div>
-
-  <!-- Training -->
+      <tr>
+        <td><b>ThunderAgent</b></td>
+        <td>vLLM / SGLang</td>
+        <td>Program-Aware</td>
+        <td>-</td>
+        <td>KV-Cache 感知</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td>
+        <td>自研 (CSA/HCA)</td>
+        <td>FP4 + CSA/HCA</td>
+        <td>DGDS-style</td>
+        <td>Token-WAL 可抢占</td>
+        <td>1M Token</td>
+      </tr>
   <div class="cmp-section" id="tab-training">
     <h2 class="section-title">Training / Optimization 对比</h2>
     <table class="cmp-table">
@@ -235,10 +261,22 @@
         <td>去中心化异步</td>
         <td>-</td>
       </tr>
-    </table>
-  </div>
-
-  <!-- Data Processing -->
+      <tr>
+        <td><b>ThunderAgent</b></td>
+        <td>依赖集成框架</td>
+        <td>依赖集成框架</td>
+        <td>依赖集成框架</td>
+        <td>依赖集成框架</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td>
+        <td>自研 (DualPipe)</td>
+        <td>5D + DualPipe</td>
+        <td>GRPO + OPD</td>
+        <td>Specialist→OPD</td>
+        <td>FP4 QAT (MXFP4)</td>
+      </tr>
   <div class="cmp-section" id="tab-data">
     <h2 class="section-title">Data Processing 对比</h2>
     <table class="cmp-table">
@@ -294,10 +332,20 @@
         <td>P2P 广播</td>
         <td>-</td>
       </tr>
-    </table>
-  </div>
-
-  <!-- I/O -->
+      <tr>
+        <td><b>ThunderAgent</b></td>
+        <td>Program 元数据</td>
+        <td>Program 状态</td>
+        <td>Program-Aware</td>
+        <td>KV Cache 保持</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td>
+        <td>metadata/per-token 分离</td>
+        <td>共享内存加载器</td>
+        <td>教师索引排序</td>
+        <td>隐藏状态缓存</td>
+      </tr>
   <div class="cmp-section" id="tab-io">
     <h2 class="section-title">I/O & 通信 对比</h2>
     <table class="cmp-table">
@@ -353,33 +401,43 @@
         <td>libp2p</td>
         <td>Gossip 广播</td>
       </tr>
-    </table>
-  </div>
-
-  <!-- Agentic Dimensions -->
+      <tr>
+        <td><b>ThunderAgent</b></td>
+        <td>Program-Aware</td>
+        <td>依赖后端</td>
+        <td>依赖后端</td>
+        <td>-</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td>
+        <td>自研</td>
+        <td>NCCL</td>
+        <td>内部 RPC</td>
+        <td>Token-WAL + 3FS</td>
+      </tr>
   <div class="cmp-section" id="tab-agentic">
     <h2 class="section-title">Agentic 能力支持度 <span style="font-size:0.7rem;color:var(--text-muted)">(参考 arXiv 2509.02547 分类体系)</span></h2>
     <table class="cmp-table">
       <tr>
-        <th>能力</th><th>verl</th><th>ROLL</th><th>SLIME</th><th>MILES</th><th>Forge</th><th>Seer</th><th>rl-swarm</th>
+        <th>能力</th><th>verl</th><th>ROLL</th><th>SLIME</th><th>MILES</th><th>Forge</th><th>Seer</th><th>rl-swarm</th><th>ThunderAgent</th><th>DSv4</th>
       </tr>
       <tr>
-        <td><b>Planning</b></td><td>◐ AgentLoop</td><td>◐ 异步流水线</td><td>○</td><td>○</td><td>● Gateway</td><td>◐ Divided</td><td>◐ GameMgr</td>
+        <td><b>Planning</b></td><td>◐ AgentLoop</td><td>◐ 异步流水线</td><td>○</td><td>○</td><td>● Gateway</td><td>◐ Divided</td><td>◐ GameMgr</td><td>◐ Program</td><td>◐ Interleaved</td>
       </tr>
       <tr>
-        <td><b>Tool Use</b></td><td>◐ Server API</td><td>● 环境级异步</td><td>◐ HTTP</td><td>◐ HTTP</td><td><span class="chip t">● 数千工具</span></td><td>◐</td><td>◐ 代码执行</td>
+        <td><b>Tool Use</b></td><td>◐ Server API</td><td>● 环境级异步</td><td>◐ HTTP</td><td>◐ HTTP</td><td><span class="chip t">● 数千工具</span></td><td>◐</td><td>◐ 代码执行</td><td>● Docker</td><td><span class="chip t">● DSec</span></td>
       </tr>
       <tr>
-        <td><b>Memory</b></td><td>○</td><td>○</td><td>◐ RadixTrie</td><td>◐ RadixTrie</td><td><span class="chip r">● KV Pool</span></td><td><span class="chip r">● Mooncake</span></td><td>○</td>
+        <td><b>Memory</b></td><td>○</td><td>○</td><td>◐ RadixTrie</td><td>◐ RadixTrie</td><td><span class="chip r">● KV Pool</span></td><td><span class="chip r">● Mooncake</span></td><td>○</td><td>● KV感知</td><td><span class="chip r">● 3FS</span></td>
       </tr>
       <tr>
-        <td><b>Reasoning</b></td><td>● GRPO/DAPO</td><td>● GRPO/DAPO</td><td>● GRPO</td><td>● R3+GRPO</td><td>● CISPO</td><td>● DGDS</td><td>◐ SAPO</td>
+        <td><b>Reasoning</b></td><td>● GRPO/DAPO</td><td>● GRPO/DAPO</td><td>● GRPO</td><td>● R3+GRPO</td><td>● CISPO</td><td>● DGDS</td><td>◐ SAPO</td><td>依赖后端</td><td>● GRPO+OPD</td>
       </tr>
       <tr>
-        <td><b>Self-Improve</b></td><td>◐ 异步</td><td>◐ Flash</td><td>◐ 异步</td><td>◐ 在线SFT</td><td>● 混合域</td><td>○</td><td>◐ Swarm</td>
+        <td><b>Self-Improve</b></td><td>◐ 异步</td><td>◐ Flash</td><td>◐ 异步</td><td>◐ 在线SFT</td><td>● 混合域</td><td>○</td><td>◐ Swarm</td><td>○</td><td>● Specialist→OPD</td>
       </tr>
       <tr>
-        <td><b>Multi-Agent</b></td><td>○</td><td>○</td><td>○</td><td><span class="chip d">● MrlX</span></td><td>● 多Agent</td><td>○</td><td><span class="chip i">● P2P</span></td>
+        <td><b>Multi-Agent</b></td><td>○</td><td>○</td><td>○</td><td><span class="chip d">● MrlX</span></td><td>● 多Agent</td><td>○</td><td><span class="chip i">● P2P</span></td><td>● Multi-Prog</td><td>◐ 多教师OPD</td>
       </tr>
     </table>
     <p style="font-size:0.7rem;color:var(--text-muted);margin-top:0.5rem">● 完整支持 | ◐ 部分支持 | ○ 不支持/未明确</p>
@@ -396,6 +454,8 @@
       <tr><td><b>Forge</b></td><td><span class="chip t">POMDP 原生</span></td><td><span class="chip t">Turn 级</span></td><td>原生多轮</td><td>❌ CISPO</td></tr>
       <tr><td><b>Seer</b></td><td>单步 MDP</td><td>Token/Trajectory</td><td>—</td><td>✅ PPO</td></tr>
       <tr><td><b>rl-swarm</b></td><td>POMDP</td><td>Trajectory</td><td>多轮代码</td><td>❌ SAPO</td></tr>
+      <tr><td><b>ThunderAgent</b></td><td>依赖集成</td><td>依赖集成</td><td>Program级多轮</td><td>依赖集成</td></tr>
+      <tr><td><b>DeepSeek V4</b></td><td>单步+Agentic</td><td>Token/Trajectory</td><td>Interleaved Thinking</td><td>❌ GRPO</td></tr>
     </table>
   </div>
 
@@ -434,7 +494,14 @@
         <td><b>rl-swarm</b></td><td>Model-Based (Evaluator)</td><td>Trajectory</td><td>部分</td><td>❌ 无 Critic</td>
         <td><span class="chip i">SAPO</span></td>
       </tr>
-    </table>
+      <tr>
+        <td><b>ThunderAgent</b></td><td>依赖集成框架</td><td>依赖集成</td><td>依赖集成</td><td>依赖集成</td>
+        <td>依赖集成</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td><td><span class="chip d">GRM + Rule + Rubric</span></td><td>Trajectory</td><td>✅</td><td>❌ GRPO</td>
+        <td><span class="chip t">GRPO + OPD</span></td>
+      </tr>
 
     <h2 class="section-title">RL 算法族谱</h2>
     <div class="info-grid">
@@ -507,9 +574,12 @@
       <tr>
         <td><b>rl-swarm</b></td><td>POMDP</td><td>Trajectory</td><td>多轮代码</td><td>本地沙箱</td><td>❌ SAPO</td>
       </tr>
-    </table>
-
-    <h2 class="section-title">核心创新点对比</h2>
+      <tr>
+        <td><b>ThunderAgent</b></td><td>依赖集成</td><td>依赖集成</td><td>Program级多轮</td><td>Program-Aware</td><td>依赖集成</td>
+      </tr>
+      <tr>
+        <td><b>DeepSeek V4</b></td><td>单步+Agentic</td><td>Token/Trajectory</td><td>Interleaved Thinking</td><td>DSec 多基底</td><td>❌ GRPO</td>
+      </tr>
     <div class="info-grid">
       <div class="info-card rollout">
         <h3>verl - HybridFlow</h3>
@@ -574,54 +644,82 @@
           <li>无数据中心依赖</li>
         </ul>
       </div>
+      <div class="info-card data">
+        <h3>ThunderAgent - Program 感知</h3>
+        <ul>
+          <li>Program 抽象: 工作流级调度</li>
+          <li>KV-Cache 感知: 消除 Thrashing (7.1x)</li>
+          <li>异步环境准备</li>
+          <li>与 Slime/SkyRL 集成</li>
+        </ul>
+      </div>
+      <div class="info-card training">
+        <h3>DeepSeek V4 - OPD/FP4/WAL</h3>
+        <ul>
+          <li>OPD 替代混合 RL (10+ 教师蒸馏)</li>
+          <li>GRM: Actor 同时作为奖励模型</li>
+          <li>FP4 量化 (MXFP4→FP8 无损)</li>
+          <li>Token-WAL 容错 + DSec 沙箱</li>
+        </ul>
+      </div>
     </div>
   </div>
 
   <!-- Architecture Spectrum -->
   <h2 class="section-title">架构模式光谱</h2>
-  <svg class="svg-canvas" viewBox="0 0 1100 200">
-    <rect width="1100" height="200" fill="#0f1117"/>
+  <svg class="svg-canvas" viewBox="0 0 1200 200">
+    <rect width="1200" height="200" fill="#0f1117"/>
 
     <!-- Spectrum line -->
-    <line x1="80" y1="100" x2="1020" y2="100" stroke="var(--border)" stroke-width="2"/>
-    <text x="80" y="85" class="comp-sublabel" fill="var(--training)">集中式</text>
-    <text x="1000" y="85" class="comp-sublabel" fill="var(--io)">去中心化</text>
+    <line x1="60" y1="100" x2="1140" y2="100" stroke="var(--border)" stroke-width="2"/>
+    <text x="60" y="85" class="comp-sublabel" fill="var(--training)">集中式</text>
+    <text x="1110" y="85" class="comp-sublabel" fill="var(--io)">去中心化</text>
 
     <!-- System dots -->
-    <circle cx="150" cy="100" r="20" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
-    <text x="150" y="105" style="font-size:9px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">verl</text>
-    <text x="150" y="140" class="comp-sublabel">单控制器</text>
-    <text x="150" y="155" class="comp-sublabel">共置</text>
+    <circle cx="120" cy="100" r="18" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
+    <text x="120" y="105" style="font-size:8px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">verl</text>
+    <text x="120" y="140" class="comp-sublabel">单控制器</text>
+    <text x="120" y="155" class="comp-sublabel">共置</text>
 
-    <circle cx="280" cy="100" r="20" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
-    <text x="280" y="105" style="font-size:9px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">Seer</text>
-    <text x="280" y="140" class="comp-sublabel">集中式</text>
-    <text x="280" y="155" class="comp-sublabel">动态切换</text>
+    <circle cx="240" cy="100" r="18" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
+    <text x="240" y="105" style="font-size:8px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">Seer</text>
+    <text x="240" y="140" class="comp-sublabel">集中式</text>
+    <text x="240" y="155" class="comp-sublabel">动态切换</text>
 
-    <circle cx="430" cy="100" r="20" fill="var(--data-bg)" stroke="var(--data)" stroke-width="1.5"/>
-    <text x="430" y="105" style="font-size:9px;font-weight:600" fill="var(--data)" text-anchor="middle" dominant-baseline="central">ROLL</text>
-    <text x="430" y="140" class="comp-sublabel">灵活模式</text>
-    <text x="430" y="155" class="comp-sublabel">3种部署</text>
+    <circle cx="360" cy="100" r="18" fill="var(--training-bg)" stroke="var(--training)" stroke-width="1.5"/>
+    <text x="360" y="105" style="font-size:7px;font-weight:600" fill="var(--training)" text-anchor="middle" dominant-baseline="central">DSv4</text>
+    <text x="360" y="140" class="comp-sublabel">内部系统</text>
+    <text x="360" y="155" class="comp-sublabel">端到端</text>
 
-    <circle cx="560" cy="100" r="20" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="1.5"/>
-    <text x="560" y="105" style="font-size:9px;font-weight:600" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">SLIME</text>
-    <text x="560" y="140" class="comp-sublabel">编排层</text>
-    <text x="560" y="155" class="comp-sublabel">解耦</text>
+    <circle cx="480" cy="100" r="18" fill="var(--data-bg)" stroke="var(--data)" stroke-width="1.5"/>
+    <text x="480" y="105" style="font-size:8px;font-weight:600" fill="var(--data)" text-anchor="middle" dominant-baseline="central">ROLL</text>
+    <text x="480" y="140" class="comp-sublabel">灵活模式</text>
+    <text x="480" y="155" class="comp-sublabel">3种部署</text>
 
-    <circle cx="680" cy="100" r="20" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="1.5"/>
-    <text x="680" y="105" style="font-size:8px;font-weight:600" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">MILES</text>
-    <text x="680" y="140" class="comp-sublabel">编排层</text>
-    <text x="680" y="155" class="comp-sublabel">模块化</text>
+    <circle cx="600" cy="100" r="18" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="1.5"/>
+    <text x="600" y="105" style="font-size:8px;font-weight:600" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">SLIME</text>
+    <text x="600" y="140" class="comp-sublabel">编排层</text>
+    <text x="600" y="155" class="comp-sublabel">解耦</text>
 
-    <circle cx="800" cy="100" r="20" fill="var(--data-bg)" stroke="var(--data)" stroke-width="1.5"/>
-    <text x="800" y="105" style="font-size:8px;font-weight:600" fill="var(--data)" text-anchor="middle" dominant-baseline="central">Forge</text>
-    <text x="800" y="140" class="comp-sublabel">中间件</text>
-    <text x="800" y="155" class="comp-sublabel">完全解耦</text>
+    <circle cx="720" cy="100" r="18" fill="var(--rollout-bg)" stroke="var(--rollout)" stroke-width="1.5"/>
+    <text x="720" y="105" style="font-size:7px;font-weight:600" fill="var(--rollout)" text-anchor="middle" dominant-baseline="central">MILES</text>
+    <text x="720" y="140" class="comp-sublabel">编排层</text>
+    <text x="720" y="155" class="comp-sublabel">模块化</text>
 
-    <circle cx="960" cy="100" r="20" fill="var(--io-bg)" stroke="var(--io)" stroke-width="1.5"/>
-    <text x="960" y="105" style="font-size:8px;font-weight:600" fill="var(--io)" text-anchor="middle" dominant-baseline="central">swarm</text>
-    <text x="960" y="140" class="comp-sublabel">P2P</text>
-    <text x="960" y="155" class="comp-sublabel">去中心化</text>
+    <circle cx="840" cy="100" r="18" fill="var(--data-bg)" stroke="var(--data)" stroke-width="1.5"/>
+    <text x="840" y="105" style="font-size:7px;font-weight:600" fill="var(--data)" text-anchor="middle" dominant-baseline="central">Forge</text>
+    <text x="840" y="140" class="comp-sublabel">中间件</text>
+    <text x="840" y="155" class="comp-sublabel">完全解耦</text>
+
+    <circle cx="960" cy="100" r="18" fill="var(--io-bg)" stroke="var(--io)" stroke-width="1.5"/>
+    <text x="960" y="105" style="font-size:6px;font-weight:600" fill="var(--io)" text-anchor="middle" dominant-baseline="central">Thunder</text>
+    <text x="960" y="140" class="comp-sublabel">Program</text>
+    <text x="960" y="155" class="comp-sublabel">工作流级</text>
+
+    <circle cx="1080" cy="100" r="18" fill="var(--io-bg)" stroke="var(--io)" stroke-width="1.5"/>
+    <text x="1080" y="105" style="font-size:7px;font-weight:600" fill="var(--io)" text-anchor="middle" dominant-baseline="central">swarm</text>
+    <text x="1080" y="140" class="comp-sublabel">P2P</text>
+    <text x="1080" y="155" class="comp-sublabel">去中心化</text>
   </svg>
 </div>
 

@@ -40,9 +40,39 @@ logger = logging.getLogger(__name__)
 # ---- Tool call parsing ----
 TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
+# DeepSeek V4 XML tool-call schema: <|DSML|tool_calls> format
+DSML_TOOL_CALL_PATTERN = re.compile(
+    r"<\|DSML\|tool_calls>\s*(.*?)\s*</\|DSML\|tool_calls>", re.DOTALL
+)
+# Individual tool call within DSML block
+DSML_SINGLE_CALL_PATTERN = re.compile(
+    r"<\|DSML\|tool_call>\s*(.*?)\s*</\|DSML\|tool_call>", re.DOTALL
+)
+# Interleaved Thinking blocks (preserved across tool calls in V4)
+THINKING_BLOCK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
-def parse_tool_calls(text: str) -> list[dict]:
-    """Parse <tool_call> JSON blocks from LLM output."""
+
+def parse_tool_calls(text: str, format: str = "auto") -> list[dict]:
+    """Parse tool call blocks from LLM output.
+
+    Supports multiple formats:
+    - "xml": Standard <tool_call> JSON blocks
+    - "dsml": DeepSeek V4 <|DSML|tool_calls> XML format
+    - "auto": Try DSML first, fall back to XML
+    """
+    if format == "dsml":
+        return _parse_dsml_tool_calls(text)
+    elif format == "xml":
+        return _parse_xml_tool_calls(text)
+    else:  # auto
+        calls = _parse_dsml_tool_calls(text)
+        if not calls:
+            calls = _parse_xml_tool_calls(text)
+        return calls
+
+
+def _parse_xml_tool_calls(text: str) -> list[dict]:
+    """Parse standard <tool_call> JSON blocks from LLM output."""
     calls = []
     for m in TOOL_CALL_PATTERN.finditer(text):
         raw = m.group(1).strip()
@@ -54,6 +84,51 @@ def parse_tool_calls(text: str) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             logger.warning("Failed to parse tool call: %s", raw[:100])
     return calls
+
+
+def _parse_dsml_tool_calls(text: str) -> list[dict]:
+    """Parse DeepSeek V4 DSML tool-call schema.
+
+    V4 uses a structured XML format with |DSML| special tokens:
+        <|DSML|tool_calls>
+            <|DSML|tool_call>
+                {"name": "web_search", "arguments": {"query": "..."}}
+            </|DSML|tool_call>
+            <|DSML|tool_call>
+                {"name": "calculator", "arguments": {"expression": "..."}}
+            </|DSML|tool_call>
+        </|DSML|tool_calls>
+    """
+    calls = []
+    # First try to find the outer tool_calls block
+    outer_match = DSML_TOOL_CALL_PATTERN.search(text)
+    if outer_match:
+        inner_text = outer_match.group(1)
+        for m in DSML_SINGLE_CALL_PATTERN.finditer(inner_text):
+            raw = m.group(1).strip()
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict) and "name" in obj:
+                    obj.setdefault("arguments", {})
+                    calls.append(obj)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Failed to parse DSML tool call: %s", raw[:100])
+    return calls
+
+
+def extract_thinking_blocks(text: str) -> list[str]:
+    """Extract Interleaved Thinking blocks from response.
+
+    DeepSeek V4 preserves <think>...</think> blocks across multi-turn
+    tool calls, maintaining reasoning continuity. This function extracts
+    all thinking blocks for context management.
+    """
+    return [m.group(1).strip() for m in THINKING_BLOCK_PATTERN.finditer(text)]
+
+
+def strip_thinking_blocks(text: str) -> str:
+    """Remove thinking blocks from text (for tool call parsing)."""
+    return THINKING_BLOCK_PATTERN.sub("", text).strip()
 
 
 # =========================================================================
@@ -154,6 +229,8 @@ class AgentLoopConfig:
     temperature: float = 0.7
     top_p: float = 0.95
     rollout_timeout: float = 120.0
+    tool_call_format: str = "auto"  # "xml", "dsml", "auto"
+    preserve_thinking: bool = True  # V4-style Interleaved Thinking
     stop_sequences: list[str] = field(
         default_factory=lambda: ["<|endoftext|>", "<|im_end|>"]
     )
@@ -284,7 +361,14 @@ class StandaloneAgentLoop:
                 )
 
                 response_text = gen.get("text", "")
-                tool_calls = parse_tool_calls(response_text)
+                tool_calls = parse_tool_calls(
+                    response_text, format=self.config.tool_call_format
+                )
+
+                # V4-style Interleaved Thinking: preserve thinking blocks
+                thinking_blocks = []
+                if self.config.preserve_thinking:
+                    thinking_blocks = extract_thinking_blocks(response_text)
 
                 if not tool_calls:
                     trajectory.turns.append(TurnRecord(

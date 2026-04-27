@@ -1,0 +1,151 @@
+# =============================================================================
+# On-Policy Distillation (OPD) — DeepSeek V4-style Multi-Teacher Distillation
+# =============================================================================
+# This config implements the second stage of V4's Post-Training pipeline:
+# Specialist RL Training → On-Policy Distillation (OPD)
+#
+# OPD replaces traditional mixed RL with multi-teacher full-vocabulary
+# distillation, merging domain specialists into a single generalist model.
+#
+# Prerequisites:
+#   - Trained specialist models (math, code, tool-calling, general)
+#   - Each specialist trained with GRPO using grpo_deepseek_tool.yaml
+#
+# Usage:
+#   python3 -m verl.trainer.main_distill \
+#       --config-path=configs \
+#       --config-name=opd_deepseek_v4
+# =============================================================================
+
+# ---- Mode ----
+mode: on_policy_distillation
+
+# ---- Student Model ----
+student:
+  model:
+    path: deepseek-ai/DeepSeek-V4-Flash
+    trust_remote_code: true
+  strategy: megatron
+  megatron:
+    tensor_model_parallel_size: 4
+    pipeline_model_parallel_size: 2
+    expert_model_parallel_size: 8
+    sequence_parallel: true
+    context_parallel_size: 1
+  optim:
+    lr: 5.0e-7                             # lower LR for distillation
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+  lr_scheduler:
+    type: cosine
+    warmup_steps: 100
+    min_lr_ratio: 0.05
+  grad_clip: 1.0
+
+# ---- Teacher Models (Specialists) ----
+teachers:
+  # Each teacher is a GRPO-trained specialist
+  - name: math_specialist
+    path: checkpoints/specialist_math/
+    domain: math
+    weight: 0.25                           # contribution weight in OPD
+    reasoning_effort: think_max
+  - name: code_specialist
+    path: checkpoints/specialist_code/
+    domain: code
+    weight: 0.25
+    reasoning_effort: think_high
+  - name: tool_specialist
+    path: checkpoints/specialist_tool/
+    domain: tool_calling
+    weight: 0.25
+    reasoning_effort: think_high
+  - name: general_specialist
+    path: checkpoints/specialist_general/
+    domain: general
+    weight: 0.25
+    reasoning_effort: non_think
+
+# ---- Teacher Scheduling ----
+teacher_scheduling:
+  # Sort mini-batches by teacher index to minimize teacher switching
+  sort_by_teacher: true
+  # Cache teacher hidden states instead of materializing full logits
+  # (V4 innovation: vocab size 200K+ makes logits storage prohibitive)
+  cache_hidden_states: true
+  # Max teachers loaded simultaneously (GPU memory constraint)
+  max_concurrent_teachers: 2
+  # Teacher quantization for memory efficiency
+  teacher_quantization:
+    enable: true
+    method: mxfp4                          # FP4 for teacher inference
+    dequant_target: fp8
+
+# ---- Distillation Config ----
+distillation:
+  # Full-vocabulary KL divergence (not Top-K logits)
+  kl_type: full_vocab                      # "full_vocab" or "top_k"
+  top_k: null                             # only used when kl_type=top_k
+  temperature: 1.0                         # distillation temperature
+  kl_coeff: 1.0                            # KL loss coefficient
+  # On-Policy: student generates samples, teacher provides logits
+  on_policy: true
+  # Number of student samples per prompt
+  num_samples: 4
+  # Student generation config
+  generation:
+    temperature: 0.7
+    top_p: 0.95
+    max_new_tokens: 4096
+
+# ---- Data ----
+data:
+  train_files:
+    - data/opd_mixed_prompts.jsonl         # mixed-domain prompts
+  val_files:
+    - data/eval_prompts.jsonl
+  train_batch_size: 128
+  max_prompt_length: 2048
+  max_response_length: 4096
+  # Domain-aware batching: group prompts by domain for teacher routing
+  domain_aware_batching: true
+
+# ---- Rollout (Student Generation) ----
+rollout:
+  name: vllm
+  tensor_model_parallel_size: 8
+  gpu_memory_utilization: 0.85
+  quantization:
+    enable: true
+    method: mxfp4
+    dequant_target: fp8
+
+# ---- Trainer ----
+trainer:
+  total_epochs: 5                          # OPD typically needs fewer epochs
+  save_freq: 100
+  test_freq: 50
+  project_name: verl-agent-opd
+  experiment_name: opd_deepseek_v4_multiteacher
+  logger:
+    - wandb
+  nnodes: 8
+  n_gpus_per_node: 8
+  save_path: checkpoints/opd/
+  default_hdfs_path: null
+
+# ---- Million-Token Support (Optional) ----
+million_token:
+  enable: false                            # set true for 1M context training
+  data_format: separated                   # "separated" (metadata + per_token)
+  shared_memory_loader: true               # use shm for large sequences
+  dynamic_mini_batch: true                 # adjust batch size by seq length
+  mini_batch_schedule:
+    - max_length: 8192
+      batch_size: 128
+    - max_length: 65536
+      batch_size: 32
+    - max_length: 262144
+      batch_size: 8
+    - max_length: 1048576
+      batch_size: 2

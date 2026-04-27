@@ -1,7 +1,9 @@
 # =============================================================================
-# GRPO + DeepSeek MoE Tool-Calling Agent — verl Hydra Config
+# GRPO + DeepSeek V4-Flash Tool-Calling Agent — verl Hydra Config
 # =============================================================================
 # Conforms to verl v0.7+ config schema.
+# Updated for DeepSeek V4 innovations: FP4 quantization, Reasoning Effort,
+# million-token context, OPD support.
 #
 # Usage:
 #   python3 -m verl.trainer.main_ppo \
@@ -35,8 +37,9 @@ data:
 # ---- Actor + Rollout + Reference (colocated) ----
 actor_rollout_ref:
   model:
-    path: deepseek-ai/DeepSeek-V2.5
-    # path: Qwen/Qwen2.5-7B-Instruct      # for single-node dev
+    path: deepseek-ai/DeepSeek-V4-Flash
+    # path: deepseek-ai/DeepSeek-V2.5           # fallback for V2.5
+    # path: Qwen/Qwen2.5-7B-Instruct            # for single-node dev
     trust_remote_code: true
 
   actor:
@@ -58,7 +61,7 @@ actor_rollout_ref:
       pipeline_model_parallel_size: 2
       expert_model_parallel_size: 8        # MoE EP
       sequence_parallel: true
-      context_parallel_size: 1             # enable for long context
+      context_parallel_size: 1             # enable for long context / 1M
 
   rollout:
     name: vllm                             # or "sglang"
@@ -68,6 +71,15 @@ actor_rollout_ref:
     max_new_tokens: 4096
     tensor_model_parallel_size: 8          # TP for inference (full node)
     gpu_memory_utilization: 0.85
+
+    # ---- FP4 Quantization (DeepSeek V4-style) ----
+    quantization:
+      enable: false                        # set true for FP4 acceleration
+      method: mxfp4                        # MXFP4 format
+      dequant_target: fp8                  # FP4→FP8 lossless dequantization
+      apply_to:
+        - rollout                          # actor inference
+        - reference                        # reference model
 
     # ---- Server mode (required for AgentLoop) ----
     # vllm_rollout_mode: server            # for vLLM
@@ -82,7 +94,7 @@ actor_rollout_ref:
       max_tool_response_length: 2048       # truncate long tool responses
       max_total_tool_calls: 50             # total tool calls per episode
       rollout_timeout: 120.0               # seconds
-      format: chatml                       # tool call format parser
+      format: auto                         # "chatml", "dsml" (V4), "auto"
       tool_config_path: configs/tool_config.yaml
 
     # ---- Agent ----
@@ -102,11 +114,26 @@ actor_rollout_ref:
   ref:
     log_prob_micro_batch_size_per_gpu: 4
 
+# ---- Reasoning Effort (DeepSeek V4-style) ----
+reasoning_effort:
+  mode: think_high                       # "non_think", "think_high", "think_max"
+  # Training mixes multiple effort levels for robustness
+  training_mix:
+    non_think: 0.2                       # 20% simple queries
+    think_high: 0.5                      # 50% standard reasoning
+    think_max: 0.3                       # 30% deep reasoning
+
 # ---- Reward ----
 reward:
   custom_reward_function:
     path: src/reward_function.py
     name: compute_score
+  # Reward mode: "rule" (default) or "grm" (V4-style Generative Reward Model)
+  reward_mode: rule
+  # GRM config (when reward_mode=grm)
+  grm:
+    rubric_weight: 0.4                   # weight for GRM rubric evaluation
+    rubric_data_path: null               # path to rubric-guided evaluation data
 
 # ---- GRPO-specific ----
 algorithm_config:
@@ -123,7 +150,7 @@ trainer:
   save_freq: 200
   test_freq: 100
   project_name: verl-agent-tool-calling
-  experiment_name: grpo_deepseek_tool
+  experiment_name: grpo_deepseek_v4_tool
   logger:
     - wandb
   nnodes: 8                               # 8 nodes

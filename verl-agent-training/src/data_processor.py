@@ -25,8 +25,10 @@ class DataConfig:
     train_file: str = "data/train_prompts.jsonl"
     eval_file: str = "data/eval_prompts.jsonl"
     max_prompt_length: int = 2048
-    model_family: str = "deepseek"  # "deepseek", "qwen", "llama"
-    tool_call_format: str = "xml"  # "xml" (<tool_call>), "json" (function_call)
+    model_family: str = "deepseek"  # "deepseek", "deepseek_v4", "qwen", "llama"
+    tool_call_format: str = "xml"  # "xml" (<tool_call>), "dsml" (V4 |DSML|), "json"
+    reasoning_effort: str = "think_high"  # "non_think", "think_high", "think_max"
+    enable_million_token: bool = False  # V4-style metadata/per-token separation
     shuffle: bool = True
     seed: int = 42
 
@@ -39,6 +41,24 @@ SYSTEM_PROMPTS = {
         'object containing "name" and "arguments". After receiving the tool '
         "result in a <tool_response> block, continue your reasoning. "
         "When you have enough information, provide your final answer directly.\n\n"
+        "{tool_descriptions}"
+    ),
+    "deepseek_v4": (
+        "You are a helpful AI assistant with access to external tools.\n\n"
+        "## Tool Call Format\n"
+        "When you need to use a tool, output tool calls using the following "
+        "|DSML| XML schema:\n\n"
+        "<|DSML|tool_calls>\n"
+        "  <|DSML|tool_call>\n"
+        '    {{"name": "tool_name", "arguments": {{"arg": "value"}}}}\n'
+        "  </|DSML|tool_call>\n"
+        "</|DSML|tool_calls>\n\n"
+        "Tool results will appear in <|DSML|tool_response> blocks.\n\n"
+        "## Reasoning\n"
+        "You may use <think>...</think> blocks to show your reasoning process. "
+        "Your thinking will be preserved across tool calls for continuity.\n\n"
+        "{reasoning_effort_instruction}"
+        "## Available Tools\n"
         "{tool_descriptions}"
     ),
     "qwen": (
@@ -55,6 +75,21 @@ SYSTEM_PROMPTS = {
         "You are a helpful assistant with tool-calling capabilities. "
         "When you receive a tool call response, use the output to form your answer.\n\n"
         "Available tools:\n{tool_descriptions}"
+    ),
+}
+
+# Reasoning Effort instructions for DeepSeek V4
+REASONING_EFFORT_INSTRUCTIONS = {
+    "non_think": "",  # No special instruction
+    "think_high": (
+        "Think through your approach before acting. "
+        "Use <think> blocks to organize your reasoning.\n\n"
+    ),
+    "think_max": (
+        "Please think very carefully and deeply about this task. "
+        "Break down the problem step by step in <think> blocks. "
+        "Consider edge cases and verify your reasoning before providing "
+        "your final answer.\n\n"
     ),
 }
 
@@ -117,6 +152,15 @@ class DataProcessor:
             self.config.model_family,
             SYSTEM_PROMPTS["deepseek"],
         )
+        # V4 templates need reasoning effort instruction
+        if self.config.model_family == "deepseek_v4":
+            effort_instruction = REASONING_EFFORT_INSTRUCTIONS.get(
+                self.config.reasoning_effort, ""
+            )
+            return template.format(
+                tool_descriptions=tool_descriptions,
+                reasoning_effort_instruction=effort_instruction,
+            )
         return template.format(tool_descriptions=tool_descriptions)
 
     def prepare_examples(
@@ -191,3 +235,54 @@ class DataProcessor:
         """Yield batches of examples."""
         for i in range(0, len(examples), batch_size):
             yield examples[i : i + batch_size]
+
+    def prepare_million_token_format(
+        self,
+        examples: list[TrainingExample],
+        output_dir: str,
+    ) -> dict:
+        """Prepare data in DeepSeek V4-style metadata/per-token separated format.
+
+        For million-token contexts, traditional DataProto with unified tensors
+        causes OOM. V4 separates:
+        - metadata.jsonl: sample-level fields (prompt_id, reward, etc.)
+        - per_token/<id>.bin: per-token fields (input_ids, masks, log_probs)
+
+        This enables:
+        - Loading all metadata into memory for scheduling/sampling
+        - Loading per-token data on demand from shared memory or filesystem
+        """
+        if not self.config.enable_million_token:
+            logger.info("Million-token format disabled, using standard format")
+            return {"format": "standard", "examples": len(examples)}
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        per_token_dir = output_path / "per_token"
+        per_token_dir.mkdir(exist_ok=True)
+
+        metadata_records = []
+        for ex in examples:
+            metadata_records.append({
+                "prompt_id": ex.prompt_id,
+                "ground_truth": ex.ground_truth,
+                "metadata": ex.metadata,
+                "prompt_length": len(ex.prompt),
+                "reasoning_effort": self.config.reasoning_effort,
+            })
+
+        metadata_path = output_path / "metadata.jsonl"
+        with open(metadata_path, "w") as f:
+            for record in metadata_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        logger.info(
+            "Prepared million-token format: %d examples, metadata at %s",
+            len(examples), metadata_path,
+        )
+        return {
+            "format": "million_token",
+            "metadata_path": str(metadata_path),
+            "per_token_dir": str(per_token_dir),
+            "num_examples": len(examples),
+        }

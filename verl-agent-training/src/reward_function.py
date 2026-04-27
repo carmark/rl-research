@@ -45,6 +45,11 @@ DEFAULT_CONFIG = {
     "format_penalty": -0.1,
     "noop_factor": 0.3,
     "match_mode": "contains",   # "exact", "contains", "numeric"
+    # DeepSeek V4 GRM mode
+    "reward_mode": "rule",      # "rule" (default), "grm" (Generative Reward Model)
+    "reasoning_effort": "auto", # "auto", "non_think", "think_high", "think_max"
+    "grm_rubric_weight": 0.4,   # weight for GRM rubric score when in grm mode
+    "effort_penalty_factor": 0.1,  # penalty multiplier for reasoning effort mismatch
 }
 
 
@@ -65,34 +70,46 @@ def compute_score(
     extra_info = extra_info or {}
     config = {**DEFAULT_CONFIG, **kwargs}
 
+    reward_mode = config["reward_mode"]
+
+    # --- GRM mode (DeepSeek V4-style Generative Reward Model) ---
+    if reward_mode == "grm":
+        return _compute_grm_score(
+            data_source, solution_str, ground_truth, extra_info, config
+        )
+
+    # --- Standard rule-based mode ---
     # --- 1. Task completion (rule-based) ---
     match_mode = config["match_mode"]
     task_correct = _verify_answer(solution_str, ground_truth, match_mode)
     task_score = config["task_correct"] if task_correct else config["task_incorrect"]
 
     # --- 2. Format quality ---
-    # Check if the response contains well-formed tool call blocks
     format_score = _check_format(solution_str, config)
 
     # --- 3. Tool step rewards (from ToolAgentLoop) ---
-    # verl's ToolAgentLoop collects step_reward from each BaseTool.execute()
-    # and passes them in extra_info["tool_rewards"]
     tool_rewards = extra_info.get("tool_rewards", [])
     tool_reward_sum = sum(tool_rewards) if tool_rewards else 0.0
 
     # --- 4. No-op detection ---
-    # If the model answered without making any tool calls, penalize
     num_turns = extra_info.get("num_turns", 1)
     has_tools = bool(tool_rewards) or _has_tool_calls(solution_str)
     is_noop = not has_tools
 
-    # --- 5. Combine ---
+    # --- 5. Reasoning Effort awareness (V4-style) ---
+    effort_adjustment = _compute_effort_adjustment(
+        solution_str, extra_info, config
+    )
+
+    # --- 6. Combine ---
     rule_score = task_score + format_score
     total = (config["rule_weight"] * rule_score
              + config["tool_reward_weight"] * tool_reward_sum)
 
     if is_noop:
         total *= config["noop_factor"]
+
+    total += effort_adjustment
 
     return {
         "score": total,           # required by verl
@@ -103,6 +120,8 @@ def compute_score(
         "num_tool_calls": len(tool_rewards),
         "num_turns": num_turns,
         "is_noop": is_noop,
+        "effort_adjustment": effort_adjustment,
+        "reward_mode": reward_mode,
     }
 
 
@@ -169,4 +188,110 @@ def _check_format(solution: str, config: dict) -> float:
 
 def _has_tool_calls(solution: str) -> bool:
     """Check if the response text contains any tool call blocks."""
-    return "<tool_call>" in solution
+    return "<tool_call>" in solution or "<|DSML|tool_call>" in solution
+
+
+# ---- DeepSeek V4 GRM Mode ----
+
+def _compute_grm_score(
+    data_source: str,
+    solution_str: str,
+    ground_truth: str,
+    extra_info: dict,
+    config: dict,
+) -> dict:
+    """Compute reward using Generative Reward Model (GRM) mode.
+
+    In GRM mode (inspired by DeepSeek V4), the actor model also serves as
+    a reward model. The rubric score is expected in extra_info["grm_rubric_score"],
+    provided by the GRM evaluation pass.
+
+    GRM generates Rubric-Guided evaluation text, from which a structured
+    score is extracted. This combines with rule-based signals.
+    """
+    # Rule-based components (always computed)
+    task_correct = _verify_answer(solution_str, ground_truth, config["match_mode"])
+    task_score = config["task_correct"] if task_correct else config["task_incorrect"]
+    format_score = _check_format(solution_str, config)
+
+    # GRM rubric score (from external GRM evaluation pass)
+    grm_rubric_score = extra_info.get("grm_rubric_score", 0.0)
+
+    # Tool rewards
+    tool_rewards = extra_info.get("tool_rewards", [])
+    tool_reward_sum = sum(tool_rewards) if tool_rewards else 0.0
+
+    # No-op detection
+    has_tools = bool(tool_rewards) or _has_tool_calls(solution_str)
+    is_noop = not has_tools
+
+    # Reasoning Effort adjustment
+    effort_adjustment = _compute_effort_adjustment(
+        solution_str, extra_info, config
+    )
+
+    # GRM combines rule score with rubric score
+    rule_weight = 1.0 - config["grm_rubric_weight"]
+    rule_score = task_score + format_score
+    total = (rule_weight * rule_score
+             + config["grm_rubric_weight"] * grm_rubric_score
+             + config["tool_reward_weight"] * tool_reward_sum)
+
+    if is_noop:
+        total *= config["noop_factor"]
+
+    total += effort_adjustment
+
+    return {
+        "score": total,
+        "task_correct": task_correct,
+        "task_score": task_score,
+        "format_score": format_score,
+        "grm_rubric_score": grm_rubric_score,
+        "tool_reward_sum": tool_reward_sum,
+        "num_tool_calls": len(tool_rewards),
+        "num_turns": extra_info.get("num_turns", 1),
+        "is_noop": is_noop,
+        "effort_adjustment": effort_adjustment,
+        "reward_mode": "grm",
+    }
+
+
+def _compute_effort_adjustment(
+    solution_str: str,
+    extra_info: dict,
+    config: dict,
+) -> float:
+    """Compute Reasoning Effort-aware reward adjustment.
+
+    DeepSeek V4 supports multiple reasoning effort levels. This function
+    adjusts the reward based on whether the model's reasoning depth matches
+    the expected effort level.
+
+    - Non-think: penalize if model includes lengthy reasoning
+    - Think Max: penalize if model skips reasoning on complex tasks
+    """
+    effort = config.get("reasoning_effort", "auto")
+    if effort == "auto":
+        # Determine effort from extra_info or task metadata
+        effort = extra_info.get("reasoning_effort", "think_high")
+
+    factor = config.get("effort_penalty_factor", 0.1)
+
+    # Count thinking blocks in response
+    import re
+    thinking_blocks = re.findall(r"<think>.*?</think>", solution_str, re.DOTALL)
+    has_thinking = len(thinking_blocks) > 0
+    thinking_length = sum(len(b) for b in thinking_blocks)
+
+    if effort == "non_think":
+        # Penalize excessive reasoning in non-think mode
+        if thinking_length > 200:
+            return -factor * min(thinking_length / 1000, 1.0)
+    elif effort == "think_max":
+        # Penalize lack of reasoning in think_max mode
+        if not has_thinking or thinking_length < 100:
+            return -factor
+    # think_high: no adjustment
+
+    return 0.0
